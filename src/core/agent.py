@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
@@ -24,6 +24,14 @@ from .models import (
 from .parser import OutputParser
 from .planner import Planner
 from .session import SessionManager
+
+@runtime_checkable
+class UICallback(Protocol):
+    """Protocol that the TUI app implements to receive agent output."""
+    def append_log(self, renderable: RenderableType) -> None: ...
+    def set_status(self, state: str, message: str = "") -> None: ...
+    def enable_input(self, enabled: bool) -> None: ...
+
 
 console = Console()
 
