@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from rich.console import RenderableType
+from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.widgets import Static, Input
-from textual.containers import Vertical
+from textual.widgets import Static
+from textual.containers import Horizontal, Vertical
 
 from ..core.agent import AgentLoop, UICallback
 from ..core.session import SessionManager
-from .widgets import ChatLog
+from .widgets import ChatLog, StatusBar, ChatInput
 
 from .tmux import capture_pane
 
@@ -17,45 +18,23 @@ from .tmux import capture_pane
 class TUICallback:
     """UICallback implementation that routes output to Textual widgets."""
 
-    def __init__(self, log: ChatLog, status: Static, input_widget: Input):
+    def __init__(self, log: ChatLog, status: StatusBar, chat_input: ChatInput):
         self._log = log
         self._status = status
-        self._input = input_widget
+        self._input = chat_input
 
     def append_log(self, renderable: RenderableType) -> None:
         self._log.append_log(renderable)
 
     def set_status(self, state: str, message: str = "") -> None:
-        icons = {
-            "ready":      ("dim", "●"),
-            "thinking":   ("cyan", "⠋"),
-            "analyzing":  ("cyan", "⠙"),
-            "running":    ("yellow", "⠹"),
-            "processing": ("yellow", "⠸"),
-            "done":       ("green", "✓"),
-            "error":      ("red", "✗"),
-        }
-        style, icon = icons.get(state, ("dim", "●"))
-        labels = {
-            "ready":      "Ready",
-            "thinking":   "Waiting for LLM...",
-            "analyzing":  "LLM processing...",
-            "running":    "Running tool...",
-            "processing": "Parsing results...",
-            "done":       "Done",
-            "error":      "Error",
-        }
-        text = message or labels.get(state, state)
-        self._status.update(f"[{style}]{icon}  {text}[/{style}]")
+        self._status.set_status(state, message)
 
     def enable_input(self, enabled: bool) -> None:
-        self._input.disabled = not enabled
-        if enabled:
-            self._input.focus()
+        self._input.set_enabled(enabled)
 
 
 class KaliMentorApp(App):
-    """Main Textual TUI — full-width chat pane with inline prompt."""
+    """Main Textual TUI — full-width chat pane with input bar."""
 
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
@@ -81,42 +60,16 @@ class KaliMentorApp(App):
         width: 1fr;
         height: 1fr;
     }
-    #input-separator-top {
-        height: 1;
-        background: #0d1117;
-        color: #444c56;
+    #bottom-bar {
+        height: 3;
         dock: bottom;
-        padding: 0 0;
-    }
-    #prompt-input {
-        height: 1;
-        border: none;
-        background: #161b22;
-        color: #e6edf3;
-        padding: 0 1;
-        dock: bottom;
-    }
-    #prompt-input:focus {
-        border: none;
         background: #161b22;
     }
-    #prompt-input:disabled {
-        background: #161b22;
-        color: #6e7681;
+    StatusBar {
+        width: 30%;
     }
-    #input-separator-bottom {
-        height: 1;
-        background: #0d1117;
-        color: #444c56;
-        dock: bottom;
-        padding: 0 0;
-    }
-    #status-line {
-        height: 1;
-        padding: 0 2;
-        background: #0d1117;
-        color: #6e7681;
-        dock: bottom;
+    ChatInput {
+        width: 70%;
     }
     """
 
@@ -135,33 +88,31 @@ class KaliMentorApp(App):
         )
         with Vertical(id="chat-pane"):
             yield ChatLog(id="chat-log", max_lines=2000, markup=True, highlight=True)
-        yield Static("[dim]●  Ready[/dim]", id="status-line")
-        yield Static("─" * 200, id="input-separator-bottom")
-        yield Input(placeholder="> Ask anything or type a command...", id="prompt-input")
-        yield Static("─" * 200, id="input-separator-top")
+        with Horizontal(id="bottom-bar"):
+            yield StatusBar(id="status-bar")
+            yield ChatInput(id="chat-input")
 
     def on_mount(self) -> None:
         log = self.query_one(ChatLog)
-        status = self.query_one("#status-line", Static)
-        prompt = self.query_one("#prompt-input", Input)
+        status = self.query_one(StatusBar)
+        chat_input = self.query_one(ChatInput)
 
-        cb = TUICallback(log, status, prompt)
+        cb = TUICallback(log, status, chat_input)
         self.agent.tui_mode = True
         self.agent.ui = cb
 
-        prompt.disabled = True
+        chat_input.set_enabled(False)
         self.run_worker(self._start_agent(), exclusive=True)
 
     async def _start_agent(self) -> None:
         await self.agent.run()
 
     def on_input_submitted(self, event) -> None:
-        if event.input.id == "prompt-input":
+        if event.input.id == "chat-input-field":
             text = event.value.strip()
             event.input.clear()
             if text:
-                # Echo user message into the log before processing
-                from rich.text import Text
+                # Echo user message into log before AI responds
                 msg = Text()
                 msg.append(" > ", style="bold green")
                 msg.append(text, style="bold white")
@@ -173,7 +124,6 @@ class KaliMentorApp(App):
         self.exit()
 
     def _get_terminal_text(self) -> str | None:
-        """Capture visible text from the right tmux pane."""
         if not self.tmux_pane:
             return None
         text = capture_pane(self.tmux_pane)
@@ -197,10 +147,9 @@ class KaliMentorApp(App):
         self.run_worker(self.agent._analyse_terminal_output(terminal_text), exclusive=True)
 
     async def _handle_input(self, text: str) -> None:
-        prompt = self.query_one("#prompt-input", Input)
-        prompt.disabled = True
+        chat_input = self.query_one(ChatInput)
+        chat_input.set_enabled(False)
         try:
             await self.agent._propose_and_execute(text)
         finally:
-            prompt.disabled = False
-            prompt.focus()
+            chat_input.set_enabled(True)
