@@ -518,6 +518,42 @@ class DeepSeekBackend(LLMBackend):
 
         return _parse_openai_response(data)
 
+    async def stream_message(
+        self,
+        messages: list[dict[str, Any]],
+        system: str = "",
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ):
+        """Streaming variant — yields StreamEvent objects."""
+        all_messages = list(messages)
+        if system and (not all_messages or all_messages[0].get("role") != "system"):
+            all_messages = [{"role": "system", "content": system}] + all_messages
+
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": all_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST",
+                "https://api.deepseek.com/chat/completions",
+                headers=self._headers(),
+                json=body,
+            ) as resp:
+                resp.raise_for_status()
+                async for event in _stream_openai_sse(resp.aiter_lines(), "deepseek", "chat/completions"):
+                    yield event
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  OPENAI  (also works with vLLM, LM Studio, etc.)
@@ -583,6 +619,42 @@ class OpenAIBackend(LLMBackend):
             data = resp.json()
 
         return _parse_openai_response(data)
+
+    async def stream_message(
+        self,
+        messages: list[dict[str, Any]],
+        system: str = "",
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ):
+        """Streaming variant — yields StreamEvent objects."""
+        all_messages = list(messages)
+        if system and (not all_messages or all_messages[0].get("role") != "system"):
+            all_messages = [{"role": "system", "content": system}] + all_messages
+
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": all_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=body,
+            ) as resp:
+                resp.raise_for_status()
+                async for event in _stream_openai_sse(resp.aiter_lines(), self.base_url, "chat/completions"):
+                    yield event
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -814,6 +886,72 @@ def _parse_openai_response(data: dict[str, Any]) -> LLMResponse:
         stop_reason = "tool_use"
 
     return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason, raw=data)
+
+
+async def _stream_openai_sse(lines_aiter, base_url: str, endpoint: str):
+    """Shared SSE streaming parser for OpenAI-compatible APIs.
+
+    Yields: TextChunk | ToolCallEvent | UsageEvent
+    """
+    from .stream import TextChunk, ToolCallEvent, UsageEvent
+
+    # tool_calls accumulator: index -> {id, name, arguments_str}
+    pending_tools: dict[int, dict[str, str]] = {}
+
+    async for line in lines_aiter:
+        if not line.startswith("data: "):
+            continue
+        raw = line[6:].strip()
+        if raw == "[DONE]" or not raw:
+            continue
+        try:
+            chunk = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+        choices = chunk.get("choices", [])
+        if choices:
+            delta = choices[0].get("delta", {})
+            finish_reason = choices[0].get("finish_reason")
+
+            # Text delta
+            content = delta.get("content")
+            if content:
+                yield TextChunk(text=content)
+
+            # Tool call deltas
+            for tc_delta in delta.get("tool_calls", []):
+                idx = tc_delta.get("index", 0)
+                if idx not in pending_tools:
+                    pending_tools[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc_delta.get("id"):
+                    pending_tools[idx]["id"] = tc_delta["id"]
+                fn = tc_delta.get("function", {})
+                if fn.get("name"):
+                    pending_tools[idx]["name"] = fn["name"]
+                if fn.get("arguments"):
+                    pending_tools[idx]["arguments"] += fn["arguments"]
+
+            # Emit tool calls when done
+            if finish_reason == "tool_calls":
+                for tc_data in pending_tools.values():
+                    try:
+                        args = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+                    except json.JSONDecodeError:
+                        args = {"_raw": tc_data["arguments"]}
+                    yield ToolCallEvent(tool_call=ToolCall(
+                        id=tc_data["id"] or uuid.uuid4().hex,
+                        name=tc_data["name"],
+                        input=args,
+                    ))
+
+        # Token usage (final chunk with stream_options)
+        usage = chunk.get("usage")
+        if usage:
+            yield UsageEvent(
+                input_tokens=usage.get("prompt_tokens", 0),
+                output_tokens=usage.get("completion_tokens", 0),
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -69,3 +69,47 @@ async def test_anthropic_stream_text_only():
     assert len(usage_events) == 1
     assert usage_events[0].input_tokens == 10
     assert usage_events[0].output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_text_only():
+    """OpenAI stream_message yields TextChunk events."""
+    from src.core.llm import OpenAIBackend
+    backend = OpenAIBackend(model="gpt-4o", api_key="test-key")
+
+    sse_lines = [
+        'data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}],"usage":null}',
+        'data: {"choices":[{"delta":{"content":" there"},"finish_reason":null}],"usage":null}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}',
+        'data: [DONE]',
+    ]
+
+    async def mock_aiter_lines():
+        for line in sse_lines:
+            yield line
+
+    mock_response = MagicMock()
+    mock_response.aiter_lines = mock_aiter_lines
+    mock_response.raise_for_status = MagicMock()
+
+    mock_stream_cm = AsyncMock()
+    mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch('httpx.AsyncClient') as MockClient:
+        mock_client = AsyncMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client.stream = MagicMock(return_value=mock_stream_cm)
+
+        events = await collect(backend.stream_message(
+            messages=[{"role": "user", "content": "hi"}],
+        ))
+
+    text_events = [e for e in events if isinstance(e, TextChunk)]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+
+    assert [e.text for e in text_events] == ["Hi", " there"]
+    assert len(usage_events) == 1
+    assert usage_events[0].input_tokens == 5
+    assert usage_events[0].output_tokens == 3
