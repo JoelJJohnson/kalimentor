@@ -513,8 +513,10 @@ class GeminiBackend(LLMBackend):
                                     input=fc.get("args", {}),
                                 ))
 
+                    # Only emit usage on final chunk (when finishReason is set)
                     usage = chunk.get("usageMetadata", {})
-                    if usage:
+                    final_candidate = chunk.get("candidates", [{}])[0] if chunk.get("candidates") else {}
+                    if usage and final_candidate.get("finishReason"):
                         yield UsageEvent(
                             input_tokens=usage.get("promptTokenCount", 0),
                             output_tokens=usage.get("candidatesTokenCount", 0),

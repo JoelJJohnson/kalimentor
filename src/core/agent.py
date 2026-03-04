@@ -325,17 +325,15 @@ class AgentLoop:
             shell = getattr(self, "_bash_shell", None) or get_shell(self.session_dir)
             on_line: asyncio.Queue[str] = asyncio.Queue()
             live_lines: list[str] = []
-            live_text = Text()
 
-            async def drain_queue(live: Live) -> None:
+            async def drain_queue(live_display: Live) -> None:
                 while True:
                     try:
                         line = on_line.get_nowait()
                         live_lines.append(line)
                         visible = live_lines[-20:]
-                        live_text.plain = "\n".join(visible)
-                        live.update(
-                            Panel(live_text, title=f"[yellow]bash: {command[:50]}[/yellow]", border_style="yellow")
+                        live_display.update(
+                            Panel(Text("\n".join(visible)), title=f"[yellow]bash: {command[:50]}[/yellow]", border_style="yellow")
                         )
                     except asyncio.QueueEmpty:
                         await asyncio.sleep(0.05)
@@ -345,7 +343,7 @@ class AgentLoop:
                 console=console,
                 refresh_per_second=20,
             ) as live:
-                drain_task = asyncio.create_task(drain_queue(live))
+                drain_task = asyncio.create_task(drain_queue(live_display=live))
                 try:
                     output, exit_code = await shell.run(command, timeout=timeout, on_line=on_line)
                 finally:
