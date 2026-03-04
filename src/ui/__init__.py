@@ -1,1 +1,3 @@
-# Terminal UI components
+from .app import KaliMentorApp
+
+__all__ = ["KaliMentorApp"]
