@@ -26,3 +26,7 @@ def test_status_bar_states():
     from src.ui.widgets import STATE_STYLES
     for state in ["ready", "thinking", "analyzing", "running", "processing", "done", "error"]:
         assert state in STATE_STYLES
+
+def test_chat_input_import():
+    from src.ui.widgets import ChatInput
+    assert ChatInput is not None
