@@ -32,13 +32,13 @@ class ChatLog(RichLog):
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 STATE_STYLES = {
-    "ready":      ("dim", "●", "Ready"),
-    "thinking":   ("cyan", None, "Thinking..."),
-    "analyzing":  ("cyan", None, "Analyzing..."),
-    "running":    ("yellow", None, ""),
-    "processing": ("yellow", None, "Processing results..."),
+    "ready":      ("dim", "●", "Ready — type a message"),
+    "thinking":   ("cyan", None, "Waiting for LLM..."),
+    "analyzing":  ("cyan", None, "LLM processing..."),
+    "running":    ("yellow", None, "Running tool..."),
+    "processing": ("yellow", None, "Parsing results..."),
     "done":       ("green", "✓", "Done"),
-    "error":      ("red", "✗", ""),
+    "error":      ("red", "✗", "Error"),
 }
 
 

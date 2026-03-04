@@ -107,7 +107,7 @@ class AgentLoop:
         self.ui.append_log(BANNER)
         self._print_status()
 
-        self.ui.set_status("thinking", "Generating attack plan...")
+        self.ui.set_status("thinking", "Connecting to LLM...")
         try:
             plan = await self.planner.create_initial_plan(self.session)
             self._display_plan(plan)
@@ -170,9 +170,10 @@ class AgentLoop:
     # ── Core Cycle ─────────────────────────────────────────────────────
 
     async def _propose_and_execute(self, user_input: str = "") -> None:
-        self.ui.set_status("analyzing", "Analyzing...")
+        self.ui.set_status("thinking", "Waiting for LLM...")
         self.ui.enable_input(False)
         data = await self.planner.propose_next_actions(self.session, user_input)
+        self.ui.set_status("analyzing", "Analysing response...")
 
         if analysis := data.get("analysis"):
             self.ui.append_log(Panel(analysis, title="Analysis", border_style="blue"))
@@ -218,7 +219,12 @@ class AgentLoop:
             self.ui.enable_input(True)
             return
 
-        sel = Prompt.ask("Execute? (1, 1,3, all, none)", default="1")
+        if self.tui_mode:
+            # TUI: auto-execute action 1; skip high/critical risk without prompting
+            sel = "1"
+        else:
+            sel = Prompt.ask("Execute? (1, 1,3, all, none)", default="1")
+
         if sel.lower() == "none":
             self.ui.set_status("ready")
             self.ui.enable_input(True)
@@ -230,6 +236,11 @@ class AgentLoop:
             if 0 <= idx < len(proposed):
                 action = proposed[idx]
                 if action.risk_level in ("high", "critical"):
+                    if self.tui_mode:
+                        self.ui.append_log(
+                            f"[red]⚠ {action.risk_level.upper()} RISK skipped (confirm in CLI mode): {action.command[:60]}[/red]"
+                        )
+                        continue
                     if not Confirm.ask(f"[red]⚠ {action.risk_level.upper()} RISK:[/red] {action.command}\nProceed?", default=False):
                         continue
                 await self._run_action(action)
@@ -242,6 +253,7 @@ class AgentLoop:
         self.ui.append_log(f"[dim]↳ {action.rationale}[/dim]")
         self.ui.set_status("running", action.command[:60])
 
+        self.ui.set_status("running", f"Running: {action.tool}...")
         result = await self.executor.execute(action.command)
 
         if result.blocked:
@@ -282,7 +294,8 @@ class AgentLoop:
         self.session.record_action(action, ar)
 
         if result.stdout and len(result.stdout) > 100:
-            if Confirm.ask("Explain output?", default=False):
+            explain = False if self.tui_mode else Confirm.ask("Explain output?", default=False)
+            if explain:
                 exp = await self.planner.explain_output(tool, action.command, result.stdout, self.session)
                 self.ui.append_log(Panel(Markdown(exp), title="Explanation", border_style="green"))
 
