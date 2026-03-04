@@ -116,50 +116,56 @@ class AgentLoop:
 
         self.ui.append_log(HELP_TEXT)
 
-        while True:
-            try:
-                raw = Prompt.ask("\n[bold green]KaliMentor ⚡[/bold green]", default="next")
-                cmd = raw.strip().lower()
+        if not self.tui_mode:
+            # CLI mode: interactive prompt loop
+            while True:
+                try:
+                    raw = Prompt.ask("\n[bold green]KaliMentor ⚡[/bold green]", default="next")
+                    cmd = raw.strip().lower()
 
-                if cmd in ("quit", "exit", "q"):
-                    break
-                elif cmd == "status":
-                    self._print_status()
-                elif cmd == "next":
-                    await self._propose_and_execute()
-                elif cmd == "research":
-                    await self._research()
-                elif cmd == "hint":
-                    await self._hint()
-                elif cmd == "auto":
-                    await self._auto_phase()
-                elif cmd == "plan":
-                    plan = await self.planner.create_initial_plan(self.session)
-                    self._display_plan(plan)
-                elif cmd == "note":
-                    self._add_note()
-                elif cmd == "export":
-                    self._export()
-                elif cmd == "flag":
-                    flag = Prompt.ask("Flag value")
-                    self.session.add_flag(flag)
-                    self.ui.append_log(f"[green]Flag recorded! Total: {len(self.session.state.flags)}[/green]")
-                elif cmd == "phase":
-                    self._set_phase()
-                elif cmd == "help":
-                    self.ui.append_log(HELP_TEXT)
-                elif raw.startswith("!"):
-                    await self._direct_exec(raw[1:].strip())
-                else:
-                    await self._propose_and_execute(raw)
+                    if cmd in ("quit", "exit", "q"):
+                        break
+                    elif cmd == "status":
+                        self._print_status()
+                    elif cmd == "next":
+                        await self._propose_and_execute()
+                    elif cmd == "research":
+                        await self._research()
+                    elif cmd == "hint":
+                        await self._hint()
+                    elif cmd == "auto":
+                        await self._auto_phase()
+                    elif cmd == "plan":
+                        plan = await self.planner.create_initial_plan(self.session)
+                        self._display_plan(plan)
+                    elif cmd == "note":
+                        self._add_note()
+                    elif cmd == "export":
+                        self._export()
+                    elif cmd == "flag":
+                        flag = Prompt.ask("Flag value")
+                        self.session.add_flag(flag)
+                        self.ui.append_log(f"[green]Flag recorded! Total: {len(self.session.state.flags)}[/green]")
+                    elif cmd == "phase":
+                        self._set_phase()
+                    elif cmd == "help":
+                        self.ui.append_log(HELP_TEXT)
+                    elif raw.startswith("!"):
+                        await self._direct_exec(raw[1:].strip())
+                    else:
+                        await self._propose_and_execute(raw)
 
-            except KeyboardInterrupt:
-                self.ui.append_log("\n[yellow]Ctrl+C — type 'quit' to exit.[/yellow]")
-            except Exception as e:
-                self.ui.set_status("error", str(e))
+                except KeyboardInterrupt:
+                    self.ui.append_log("\n[yellow]Ctrl+C — type 'quit' to exit.[/yellow]")
+                except Exception as e:
+                    self.ui.set_status("error", str(e))
 
-        self.session.save()
-        self.ui.append_log(f"\n[green]Session saved: {self.session.state.id}[/green]")
+            self.session.save()
+            self.ui.append_log(f"\n[green]Session saved: {self.session.state.id}[/green]")
+        else:
+            # TUI mode: Textual events drive input — just signal ready and return
+            self.ui.set_status("ready")
+            self.ui.enable_input(True)
 
     # ── Core Cycle ─────────────────────────────────────────────────────
 

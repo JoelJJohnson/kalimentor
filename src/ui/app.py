@@ -41,6 +41,8 @@ class TUICallback:
 class KaliMentorApp(App):
     """Main Textual app — split layout with AI pane and terminal pane."""
 
+    BINDINGS = [("ctrl+q", "quit", "Quit")]
+
     CSS = """
     Screen {
         background: #0d1117;
@@ -124,6 +126,10 @@ class KaliMentorApp(App):
             event.input.clear()
             if text:
                 self.run_worker(self._handle_input(text), exclusive=True)
+
+    def action_quit(self) -> None:
+        self.agent.session.save()
+        self.exit()
 
     async def _handle_input(self, text: str) -> None:
         chat_input = self.query_one(ChatInput)
