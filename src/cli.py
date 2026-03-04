@@ -92,13 +92,14 @@ def start(
     if api_key:
         kwargs["api_key"] = api_key
 
+    from .ui.app import KaliMentorApp
+
     backend = create_backend(llm, **kwargs)
     executor = ToolExecutor()
     agent = AgentLoop(session, backend, executor)
 
-    console.print(f"[green]Session: {session.state.id}[/green]")
-    console.print(f"[dim]LLM: {llm} / {backend.model}[/dim]")
-    asyncio.run(agent.run())
+    app = KaliMentorApp(session=session, agent=agent)
+    app.run()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
