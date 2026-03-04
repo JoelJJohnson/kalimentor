@@ -296,10 +296,13 @@ class AgentLoop:
 
     async def _execute_one(self, tc: ToolCall) -> str:
         """Execute a single tool call, applying mode-based risk gates."""
+        from .tools.bash_tool import get_shell, _is_blocked, _get_timeout, _truncate
+        from rich.live import Live
+        from rich.text import Text
+
         risk = self.registry.effective_risk(tc.name, tc.input)
         needs_confirm = self._mode_requires_confirm(risk)
 
-        # Display the tool call being attempted
         self._display_tool_call(tc, risk)
 
         if needs_confirm:
@@ -309,7 +312,55 @@ class AgentLoop:
                 console.print(f"[yellow]{msg}[/yellow]")
                 return msg
 
-        # Execute
+        # ── Bash streaming path ──────────────────────────────────────────
+        if tc.name == "bash":
+            command = tc.input.get("command", "")
+            timeout = tc.input.get("timeout") or _get_timeout(command)
+            blocked, reason = _is_blocked(command)
+            if blocked:
+                result_str = f"[BLOCKED] {reason}"
+                self._display_tool_result(tc.name, result_str)
+                return result_str
+
+            shell = getattr(self, "_bash_shell", None) or get_shell(self.session_dir)
+            on_line: asyncio.Queue[str] = asyncio.Queue()
+            live_lines: list[str] = []
+            live_text = Text()
+
+            async def drain_queue(live: Live) -> None:
+                while True:
+                    try:
+                        line = on_line.get_nowait()
+                        live_lines.append(line)
+                        visible = live_lines[-20:]
+                        live_text.plain = "\n".join(visible)
+                        live.update(
+                            Panel(live_text, title=f"[yellow]bash: {command[:50]}[/yellow]", border_style="yellow")
+                        )
+                    except asyncio.QueueEmpty:
+                        await asyncio.sleep(0.05)
+
+            with Live(
+                Panel("", title=f"[yellow]bash: {command[:50]}[/yellow]", border_style="yellow"),
+                console=console,
+                refresh_per_second=20,
+            ) as live:
+                drain_task = asyncio.create_task(drain_queue(live))
+                try:
+                    output, exit_code = await shell.run(command, timeout=timeout, on_line=on_line)
+                finally:
+                    drain_task.cancel()
+                    try:
+                        await drain_task
+                    except asyncio.CancelledError:
+                        pass
+
+            output = _truncate(output)
+            result_str = f"{output}\n[exit {exit_code}]".strip() if exit_code != 0 else output.strip()
+            self._display_tool_result(tc.name, result_str)
+            return result_str
+
+        # ── Generic tool path (spinner) ──────────────────────────────────
         with Status(f"[yellow]Running {tc.name}…[/yellow]", console=console):
             try:
                 result = await self.registry.execute(tc.name, tc.input)
