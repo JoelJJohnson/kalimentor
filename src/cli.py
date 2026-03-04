@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -22,6 +24,32 @@ app = typer.Typer(
 console = Console()
 
 
+def _load_env() -> None:
+    """Load missing env vars from ~/.kalimentor/.env then ./.env."""
+    for env_path in [Path.home() / ".kalimentor" / ".env", Path(".env")]:
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = value.strip().strip('"').strip("'")
+
+
+def _get_config() -> dict:
+    """Read ~/.kalimentor/config.yaml, fallback to empty dict."""
+    config_path = Path.home() / ".kalimentor" / "config.yaml"
+    if config_path.exists():
+        return yaml.safe_load(config_path.read_text()) or {}
+    return {}
+
+
+_load_env()
+_CONFIG = _get_config()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  START
 # ═══════════════════════════════════════════════════════════════════════════
@@ -35,7 +63,7 @@ def start(
         help="Type: machine|web|pwn|reversing|crypto|forensics|active_directory"),
     mode: str = typer.Option("interactive", "--mode", "-m",
         help="Mode: interactive|semi_auto|autonomous|socratic"),
-    llm: str = typer.Option("ollama", "--llm",
+    llm: str = typer.Option(None, "--llm",
         help="Provider: ollama|anthropic|claude|gemini|deepseek|openai"),
     model: str = typer.Option(None, "--model", help="Override model name"),
     api_key: str = typer.Option(None, "--api-key", "-k", help="API key (or use env var)"),
@@ -44,6 +72,9 @@ def start(
     if not target and not url and challenge == "machine":
         console.print("[red]--target or --url required for machine challenges[/red]")
         raise typer.Exit(1)
+
+    llm = llm or _CONFIG.get("llm", {}).get("provider", "ollama")
+    model = model or _CONFIG.get("llm", {}).get("model")
 
     session = SessionManager.new(
         objective=objective,
@@ -157,13 +188,16 @@ def export(
 @app.command()
 def research(
     topic: str = typer.Argument(..., help="CVE, tool, or technique to research"),
-    llm: str = typer.Option("ollama", "--llm"),
+    llm: str = typer.Option(None, "--llm"),
     model: str = typer.Option(None, "--model"),
     api_key: str = typer.Option(None, "--api-key", "-k"),
 ):
     """Research a specific cybersecurity topic."""
     from .core.planner import Planner
     from rich.panel import Panel
+
+    llm = llm or _CONFIG.get("llm", {}).get("provider", "ollama")
+    model = model or _CONFIG.get("llm", {}).get("model")
 
     kwargs = {}
     if model:

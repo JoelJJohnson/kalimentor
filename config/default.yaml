@@ -3,8 +3,8 @@
 
 llm:
   # Options: ollama, anthropic, gemini, deepseek, openai
-  provider: ollama
-  model: llama3.1         # Override per-provider default
+  provider: deepseek
+  model: deepseek-chat    # Override per-provider default
 
   # Provider-specific settings:
   # anthropic: model: claude-sonnet-4-20250514
