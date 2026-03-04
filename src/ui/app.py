@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rich.console import RenderableType
 from textual.app import App, ComposeResult
-from textual.widgets import Static, Input
+from textual.widgets import Static, Input, Rule
 from textual.containers import Vertical
 
 from ..core.agent import AgentLoop, UICallback
@@ -81,18 +81,19 @@ class KaliMentorApp(App):
         width: 1fr;
         height: 1fr;
     }
-    #status-line {
+    #input-rule-top {
         height: 1;
-        padding: 0 2;
+        color: #30363d;
         background: #0d1117;
         dock: bottom;
+        margin: 0;
     }
     #prompt-input {
         height: 1;
         border: none;
         background: #0d1117;
         color: #e6edf3;
-        padding: 0 0;
+        padding: 0 1;
         dock: bottom;
     }
     #prompt-input:focus {
@@ -101,6 +102,19 @@ class KaliMentorApp(App):
     }
     #prompt-input:disabled {
         color: #6e7681;
+    }
+    #input-rule-bottom {
+        height: 1;
+        color: #30363d;
+        background: #0d1117;
+        dock: bottom;
+        margin: 0;
+    }
+    #status-line {
+        height: 1;
+        padding: 0 2;
+        background: #0d1117;
+        dock: bottom;
     }
     """
 
@@ -120,7 +134,9 @@ class KaliMentorApp(App):
         with Vertical(id="chat-pane"):
             yield ChatLog(id="chat-log", max_lines=2000, markup=True, highlight=True)
         yield Static("[dim]●  Ready[/dim]", id="status-line")
+        yield Rule(id="input-rule-bottom")
         yield Input(placeholder="> Ask anything or type a command...", id="prompt-input")
+        yield Rule(id="input-rule-top")
 
     def on_mount(self) -> None:
         log = self.query_one(ChatLog)
@@ -142,6 +158,12 @@ class KaliMentorApp(App):
             text = event.value.strip()
             event.input.clear()
             if text:
+                # Echo user message into the log before processing
+                from rich.text import Text
+                msg = Text()
+                msg.append(" > ", style="bold green")
+                msg.append(text, style="bold white")
+                self.query_one(ChatLog).append_log(msg)
                 self.run_worker(self._handle_input(text), exclusive=True)
 
     def action_quit(self) -> None:
