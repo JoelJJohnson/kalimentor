@@ -41,7 +41,10 @@ class TUICallback:
 class KaliMentorApp(App):
     """Main Textual app — split layout with AI pane and terminal pane."""
 
-    BINDINGS = [("ctrl+q", "quit", "Quit")]
+    BINDINGS = [
+        ("ctrl+q", "quit", "Quit"),
+        ("ctrl+a", "analyse_terminal", "Analyse Terminal"),
+    ]
 
     CSS = """
     Screen {
@@ -130,6 +133,43 @@ class KaliMentorApp(App):
     def action_quit(self) -> None:
         self.agent.session.save()
         self.exit()
+
+    def _get_terminal_text(self) -> str | None:
+        """Extract visible + recent scrollback text from the terminal widget."""
+        if not HAS_TERMINAL:
+            return None
+        try:
+            terminal = self.query_one("#terminal")
+            # textual_terminal exposes the pyte Screen via ._driver._screen
+            screen = terminal._driver._screen
+            lines = []
+            # Grab scrollback history (last 80 lines)
+            for line in list(screen.history.top)[-80:]:
+                lines.append("".join(c.data for c in line).rstrip())
+            # Grab current visible screen
+            for y in range(screen.lines):
+                row = screen.buffer.page[y]
+                lines.append("".join(c.data for c in row.values()).rstrip())
+            return "\n".join(lines).strip()
+        except Exception:
+            return None
+
+    async def action_analyse_terminal(self) -> None:
+        """Ctrl+A — grab right pane terminal output and send to AI for analysis."""
+        if not HAS_TERMINAL:
+            self.query_one(ChatLog).append_log(
+                "[yellow]Terminal analysis requires Kali Linux.[/yellow]"
+            )
+            return
+
+        terminal_text = self._get_terminal_text()
+        if not terminal_text:
+            self.query_one(ChatLog).append_log(
+                "[yellow]Could not read terminal output.[/yellow]"
+            )
+            return
+
+        self.run_worker(self.agent._analyse_terminal_output(terminal_text), exclusive=True)
 
     async def _handle_input(self, text: str) -> None:
         chat_input = self.query_one(ChatInput)
