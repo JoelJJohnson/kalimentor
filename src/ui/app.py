@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from rich.console import RenderableType
 from textual.app import App, ComposeResult
-from textual.widgets import Static
-from textual.containers import Horizontal, Vertical  # Horizontal used by bottom-bar
+from textual.widgets import Static, Input
+from textual.containers import Vertical
 
 from ..core.agent import AgentLoop, UICallback
 from ..core.session import SessionManager
-from .widgets import ChatLog, StatusBar, ChatInput
+from .widgets import ChatLog
 
 from .tmux import capture_pane
 
@@ -17,23 +17,45 @@ from .tmux import capture_pane
 class TUICallback:
     """UICallback implementation that routes output to Textual widgets."""
 
-    def __init__(self, log: ChatLog, status: StatusBar, chat_input: ChatInput):
+    def __init__(self, log: ChatLog, status: Static, input_widget: Input):
         self._log = log
         self._status = status
-        self._input = chat_input
+        self._input = input_widget
 
     def append_log(self, renderable: RenderableType) -> None:
         self._log.append_log(renderable)
 
     def set_status(self, state: str, message: str = "") -> None:
-        self._status.set_status(state, message)
+        icons = {
+            "ready":      ("dim", "●"),
+            "thinking":   ("cyan", "⠋"),
+            "analyzing":  ("cyan", "⠙"),
+            "running":    ("yellow", "⠹"),
+            "processing": ("yellow", "⠸"),
+            "done":       ("green", "✓"),
+            "error":      ("red", "✗"),
+        }
+        style, icon = icons.get(state, ("dim", "●"))
+        labels = {
+            "ready":      "Ready",
+            "thinking":   "Waiting for LLM...",
+            "analyzing":  "LLM processing...",
+            "running":    "Running tool...",
+            "processing": "Parsing results...",
+            "done":       "Done",
+            "error":      "Error",
+        }
+        text = message or labels.get(state, state)
+        self._status.update(f"[{style}]{icon}  {text}[/{style}]")
 
     def enable_input(self, enabled: bool) -> None:
-        self._input.set_enabled(enabled)
+        self._input.disabled = not enabled
+        if enabled:
+            self._input.focus()
 
 
 class KaliMentorApp(App):
-    """Main Textual app — split layout with AI pane and terminal pane."""
+    """Main Textual TUI — full-width chat pane with inline prompt."""
 
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
@@ -59,17 +81,26 @@ class KaliMentorApp(App):
         width: 1fr;
         height: 1fr;
     }
-    #bottom-bar {
-        height: 5;
+    #status-line {
+        height: 1;
+        padding: 0 2;
         background: #0d1117;
         dock: bottom;
     }
-    StatusBar {
-        width: 25%;
-        padding: 1 1;
+    #prompt-input {
+        height: 1;
+        border: none;
+        background: #0d1117;
+        color: #e6edf3;
+        padding: 0 0;
+        dock: bottom;
     }
-    ChatInput {
-        width: 75%;
+    #prompt-input:focus {
+        border: none;
+        background: #0d1117;
+    }
+    #prompt-input:disabled {
+        color: #6e7681;
     }
     """
 
@@ -88,27 +119,26 @@ class KaliMentorApp(App):
         )
         with Vertical(id="chat-pane"):
             yield ChatLog(id="chat-log", max_lines=2000, markup=True, highlight=True)
-        with Horizontal(id="bottom-bar"):
-            yield StatusBar(id="status-bar")
-            yield ChatInput(id="chat-input")
+        yield Static("[dim]●  Ready[/dim]", id="status-line")
+        yield Input(placeholder="> Ask anything or type a command...", id="prompt-input")
 
     def on_mount(self) -> None:
         log = self.query_one(ChatLog)
-        status = self.query_one(StatusBar)
-        chat_input = self.query_one(ChatInput)
+        status = self.query_one("#status-line", Static)
+        prompt = self.query_one("#prompt-input", Input)
 
-        cb = TUICallback(log, status, chat_input)
+        cb = TUICallback(log, status, prompt)
         self.agent.tui_mode = True
         self.agent.ui = cb
 
-        chat_input.set_enabled(False)
+        prompt.disabled = True
         self.run_worker(self._start_agent(), exclusive=True)
 
     async def _start_agent(self) -> None:
         await self.agent.run()
 
     def on_input_submitted(self, event) -> None:
-        if event.input.id == "chat-input-field":
+        if event.input.id == "prompt-input":
             text = event.value.strip()
             event.input.clear()
             if text:
@@ -143,9 +173,10 @@ class KaliMentorApp(App):
         self.run_worker(self.agent._analyse_terminal_output(terminal_text), exclusive=True)
 
     async def _handle_input(self, text: str) -> None:
-        chat_input = self.query_one(ChatInput)
-        chat_input.set_enabled(False)
+        prompt = self.query_one("#prompt-input", Input)
+        prompt.disabled = True
         try:
             await self.agent._propose_and_execute(text)
         finally:
-            chat_input.set_enabled(True)
+            prompt.disabled = False
+            prompt.focus()
