@@ -93,12 +93,15 @@ def start(
         kwargs["api_key"] = api_key
 
     from .ui.app import KaliMentorApp
+    from .ui.tmux import setup_tmux_layout
+
+    tmux_pane = setup_tmux_layout()
 
     backend = create_backend(llm, **kwargs)
     executor = ToolExecutor()
     agent = AgentLoop(session, backend, executor)
 
-    app = KaliMentorApp(session=session, agent=agent)
+    app = KaliMentorApp(session=session, agent=agent, tmux_pane=tmux_pane)
     app.run()
 
 

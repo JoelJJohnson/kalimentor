@@ -144,6 +144,8 @@ FIRST_PROVIDER="${CONFIGURED_PROVIDERS[0]}"
 CONFDIR="$HOME/.kalimentor"
 if [ -f "$CONFDIR/config.yaml" ]; then
     sed -i "s|^  provider:.*|  provider: ${FIRST_PROVIDER}|" "$CONFDIR/config.yaml"
+    # Clear model so the provider's built-in default is used (prevents cross-provider mismatch)
+    sed -i "s|^  model:.*|  model:|" "$CONFDIR/config.yaml"
     echo -e "  ${GREEN}✓ Default provider set to: ${FIRST_PROVIDER}${NC}"
 fi
 

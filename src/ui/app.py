@@ -11,13 +11,7 @@ from ..core.agent import AgentLoop, UICallback
 from ..core.session import SessionManager
 from .widgets import ChatLog, StatusBar, ChatInput
 
-try:
-    from textual_terminal import Terminal
-    HAS_TERMINAL = True
-except ImportError:
-    # textual_terminal requires Linux (uses fcntl) — falls back to placeholder on Windows
-    HAS_TERMINAL = False
-    Terminal = None
+from .tmux import capture_pane
 
 
 class TUICallback:
@@ -81,10 +75,11 @@ class KaliMentorApp(App):
     }
     """
 
-    def __init__(self, session: SessionManager, agent: AgentLoop):
+    def __init__(self, session: SessionManager, agent: AgentLoop, tmux_pane: str | None = None):
         super().__init__()
         self.session = session
         self.agent = agent
+        self.tmux_pane = tmux_pane
 
     def compose(self) -> ComposeResult:
         s = self.session.state
@@ -97,12 +92,22 @@ class KaliMentorApp(App):
             with Vertical(id="left-pane"):
                 yield ChatLog(id="chat-log", max_lines=2000, markup=True, highlight=True)
             with Vertical(id="right-pane"):
-                if HAS_TERMINAL and Terminal is not None:
-                    yield Terminal(command="bash", id="terminal")
+                if self.tmux_pane:
+                    yield Static(
+                        f"🖥️  bash — tmux pane [bold]{self.tmux_pane}[/bold]\n\n"
+                        "Run your commands here.\n"
+                        "Press [bold cyan]Ctrl+A[/bold cyan] to send output to AI for analysis.",
+                        id="terminal-placeholder",
+                        markup=True,
+                    )
                 else:
                     yield Static(
-                        "Terminal not available on this platform.\nRun on Kali Linux for full terminal support.",
+                        "⚠️  tmux not detected.\n\n"
+                        "For split-terminal support, run inside tmux:\n"
+                        "  [bold cyan]tmux new-session kalimentor start -t <ip>[/bold cyan]\n\n"
+                        "Or install tmux:  sudo apt install tmux",
                         id="terminal-placeholder",
+                        markup=True,
                     )
         with Horizontal(id="bottom-bar"):
             yield StatusBar(id="status-bar")
@@ -135,37 +140,24 @@ class KaliMentorApp(App):
         self.exit()
 
     def _get_terminal_text(self) -> str | None:
-        """Extract visible + recent scrollback text from the terminal widget."""
-        if not HAS_TERMINAL:
+        """Capture visible text from the right tmux pane."""
+        if not self.tmux_pane:
             return None
-        try:
-            terminal = self.query_one("#terminal")
-            # textual_terminal exposes the pyte Screen via ._driver._screen
-            screen = terminal._driver._screen
-            lines = []
-            # Grab scrollback history (last 80 lines)
-            for line in list(screen.history.top)[-80:]:
-                lines.append("".join(c.data for c in line).rstrip())
-            # Grab current visible screen
-            for y in range(screen.lines):
-                row = screen.buffer.page[y]
-                lines.append("".join(c.data for c in row.values()).rstrip())
-            return "\n".join(lines).strip()
-        except Exception:
-            return None
+        text = capture_pane(self.tmux_pane)
+        return text or None
 
     async def action_analyse_terminal(self) -> None:
-        """Ctrl+A — grab right pane terminal output and send to AI for analysis."""
-        if not HAS_TERMINAL:
+        """Ctrl+A — grab right tmux pane output and send to AI for analysis."""
+        if not self.tmux_pane:
             self.query_one(ChatLog).append_log(
-                "[yellow]Terminal analysis requires Kali Linux.[/yellow]"
+                "[yellow]No tmux pane detected. Start kalimentor inside tmux for terminal analysis.[/yellow]"
             )
             return
 
         terminal_text = self._get_terminal_text()
         if not terminal_text:
             self.query_one(ChatLog).append_log(
-                "[yellow]Could not read terminal output.[/yellow]"
+                "[yellow]Could not read tmux pane output.[/yellow]"
             )
             return
 
