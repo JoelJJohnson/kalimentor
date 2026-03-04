@@ -1,0 +1,27 @@
+# KaliMentor Configuration
+# Copy to ~/.kalimentor/config.yaml and customize
+
+llm:
+  # Options: ollama, anthropic, gemini, deepseek, openai
+  provider: ollama
+  model: llama3.1         # Override per-provider default
+
+  # Provider-specific settings:
+  # anthropic: model: claude-sonnet-4-20250514
+  # gemini:    model: gemini-2.5-flash
+  # deepseek:  model: deepseek-chat
+  # openai:    model: gpt-4o
+
+agent:
+  default_mode: interactive    # interactive | semi_auto | autonomous | socratic
+  max_auto_iterations: 8
+  confirm_high_risk: true
+
+executor:
+  working_dir: /tmp/kalimentor
+  default_timeout: 120
+
+wordlists:
+  directory: /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt
+  dns: /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt
+  passwords: /usr/share/wordlists/rockyou.txt

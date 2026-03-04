@@ -1,0 +1,205 @@
+"""KaliMentor CLI — main entry point with all commands."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from .core.agent import AgentLoop
+from .core.executor import ToolExecutor
+from .core.llm import create_backend, list_providers, DEFAULT_MODELS
+from .core.session import SessionManager
+
+app = typer.Typer(
+    name="kalimentor",
+    help="⚡ KaliMentor — Agentic Cybersecurity Learning Framework",
+    no_args_is_help=True,
+)
+console = Console()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  START
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.command()
+def start(
+    target: str = typer.Option(None, "--target", "-t", help="Target IP address"),
+    url: str = typer.Option(None, "--url", "-u", help="Target URL (for web challenges)"),
+    objective: str = typer.Option("Gain root/SYSTEM access", "--objective", "-o", help="Session objective"),
+    challenge: str = typer.Option("machine", "--challenge", "-c",
+        help="Type: machine|web|pwn|reversing|crypto|forensics|active_directory"),
+    mode: str = typer.Option("interactive", "--mode", "-m",
+        help="Mode: interactive|semi_auto|autonomous|socratic"),
+    llm: str = typer.Option("ollama", "--llm",
+        help="Provider: ollama|anthropic|claude|gemini|deepseek|openai"),
+    model: str = typer.Option(None, "--model", help="Override model name"),
+    api_key: str = typer.Option(None, "--api-key", "-k", help="API key (or use env var)"),
+):
+    """Start a new learning session."""
+    if not target and not url and challenge == "machine":
+        console.print("[red]--target or --url required for machine challenges[/red]")
+        raise typer.Exit(1)
+
+    session = SessionManager.new(
+        objective=objective,
+        target_ip=target,
+        target_url=url,
+        challenge_type=challenge,
+        mode=mode,
+        llm_provider=llm,
+        llm_model=model or DEFAULT_MODELS.get(llm, ""),
+    )
+
+    kwargs = {}
+    if model:
+        kwargs["model"] = model
+    if api_key:
+        kwargs["api_key"] = api_key
+
+    backend = create_backend(llm, **kwargs)
+    executor = ToolExecutor()
+    agent = AgentLoop(session, backend, executor)
+
+    console.print(f"[green]Session: {session.state.id}[/green]")
+    console.print(f"[dim]LLM: {llm} / {backend.model}[/dim]")
+    asyncio.run(agent.run())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  RESUME
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.command()
+def resume(
+    session_id: str = typer.Argument(..., help="Session ID to resume"),
+    llm: str = typer.Option(None, "--llm", help="Override LLM provider"),
+    model: str = typer.Option(None, "--model"),
+    api_key: str = typer.Option(None, "--api-key", "-k"),
+):
+    """Resume a previous session."""
+    try:
+        session = SessionManager.load(session_id)
+    except FileNotFoundError:
+        console.print(f"[red]Session {session_id} not found[/red]")
+        raise typer.Exit(1)
+
+    provider = llm or session.state.llm_provider
+    kwargs = {}
+    if model:
+        kwargs["model"] = model
+    if api_key:
+        kwargs["api_key"] = api_key
+
+    backend = create_backend(provider, **kwargs)
+    agent = AgentLoop(session, backend)
+    console.print(f"[green]Resuming: {session_id}[/green]")
+    asyncio.run(agent.run())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  SESSIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.command()
+def sessions():
+    """List all saved sessions."""
+    all_s = SessionManager.list_sessions()
+    if not all_s:
+        console.print("[dim]No sessions found.[/dim]")
+        return
+
+    tbl = Table(title="Sessions")
+    tbl.add_column("ID", style="cyan")
+    tbl.add_column("Objective", max_width=35)
+    tbl.add_column("Target", style="green")
+    tbl.add_column("Phase", style="yellow")
+    tbl.add_column("Access", style="red")
+    tbl.add_column("LLM", style="dim")
+
+    for s in all_s:
+        tbl.add_row(s["id"], s["objective"][:35], s["target_ip"] or "—", s["phase"], s["access"], s["provider"])
+    console.print(tbl)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  EXPORT
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.command()
+def export(
+    session_id: str = typer.Argument(...),
+    output: str = typer.Option(None, "--output", "-o", help="Output file path"),
+):
+    """Export session as Markdown report."""
+    try:
+        session = SessionManager.load(session_id)
+    except FileNotFoundError:
+        console.print(f"[red]Session {session_id} not found[/red]")
+        raise typer.Exit(1)
+
+    report = session.export_markdown()
+    if output:
+        Path(output).write_text(report)
+        console.print(f"[green]Written: {output}[/green]")
+    else:
+        console.print(report)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  RESEARCH
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.command()
+def research(
+    topic: str = typer.Argument(..., help="CVE, tool, or technique to research"),
+    llm: str = typer.Option("ollama", "--llm"),
+    model: str = typer.Option(None, "--model"),
+    api_key: str = typer.Option(None, "--api-key", "-k"),
+):
+    """Research a specific cybersecurity topic."""
+    from .core.planner import Planner
+    from rich.panel import Panel
+
+    kwargs = {}
+    if model:
+        kwargs["model"] = model
+    if api_key:
+        kwargs["api_key"] = api_key
+
+    backend = create_backend(llm, **kwargs)
+    planner = Planner(backend)
+
+    async def _run():
+        data = await planner.research_topic(topic)
+        console.print(Panel(data.get("summary", ""), title=topic, border_style="magenta"))
+        for k, t in [("technical_details", "Details"), ("exploitation", "Exploitation"), ("practice_suggestions", "Practice")]:
+            if data.get(k):
+                console.print(Panel(data[k], title=t))
+
+    asyncio.run(_run())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PROVIDERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.command()
+def providers():
+    """List supported AI providers and their configuration."""
+    tbl = Table(title="Supported AI Providers")
+    tbl.add_column("Provider", style="cyan")
+    tbl.add_column("Default Model", style="green")
+    tbl.add_column("Env Variable", style="yellow")
+
+    for p in list_providers():
+        tbl.add_row(p["provider"], p["default_model"], p["env_var"])
+    console.print(tbl)
+
+
+if __name__ == "__main__":
+    app()
