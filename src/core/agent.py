@@ -1,423 +1,537 @@
-"""Agentic loop engine — OODA-style observe/orient/decide/act cycle."""
+"""Agentic loop — single-threaded tool_use loop modelled after Claude Code's architecture.
+
+Replaces the old JSON-plan-and-pick loop with a native tool_use cycle:
+
+  user input → LLM (with tools) → tool calls → tool results → LLM → … → text reply
+
+Interaction modes
+-----------------
+interactive  All CONFIRM/DANGEROUS tools pause for user approval. SAFE run automatically.
+autonomous   All tools run automatically except DANGEROUS. (Claude Code "auto-accept".)
+socratic     LLM is instructed to explain what it would do but call NO tools. User executes.
+yolo         Everything runs. No confirmations. CTF speedrun mode. Warns heavily.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
-from rich.console import Console, RenderableType
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
+from rich.status import Status
 from rich.table import Table
 
-from .executor import ToolExecutor
-from .llm import LLMBackend
-from .models import (
-    ActionResult,
-    ActionStatus,
-    AgentMode,
-    Phase,
-    ProposedAction,
-    RiskLevel,
+from .llm import (
+    LLMBackend,
+    LLMResponse,
+    ToolCall,
+    assistant_message,
+    tool_result_message,
+    user_message,
 )
-from .parser import OutputParser
-from .planner import Planner
+from .tools.registry import ToolRegistry, ToolRiskLevel
+from .tools.plan_tool import get_plan_store, set_plan_store, PlanStore
 from .session import SessionManager
-
-@runtime_checkable
-class UICallback(Protocol):
-    """Protocol that the TUI app implements to receive agent output."""
-    def append_log(self, renderable: RenderableType) -> None: ...
-    def set_status(self, state: str, message: str = "") -> None: ...
-    def enable_input(self, enabled: bool) -> None: ...
-
-
-class ConsoleUI:
-    """Fallback UI that prints to the Rich console (non-TUI mode)."""
-    def __init__(self):
-        self._console = Console()
-
-    def append_log(self, renderable: RenderableType) -> None:
-        self._console.print(renderable)
-
-    def set_status(self, state: str, message: str = "") -> None:
-        icons = {
-            "thinking": "[cyan]⠋[/cyan]",
-            "analyzing": "[cyan]⠙[/cyan]",
-            "running": "[yellow]⠹[/yellow]",
-            "processing": "[yellow]⠸[/yellow]",
-            "done": "[green]✓[/green]",
-            "error": "[red]✗[/red]",
-            "ready": "[dim]●[/dim]",
-        }
-        icon = icons.get(state, "●")
-        if message:
-            self._console.print(f"{icon}  {message}", highlight=False)
-
-    def enable_input(self, enabled: bool) -> None:
-        pass  # No-op for console mode
-
+from .context import compress, needs_compression
+from .memory import read_session_memory, ensure_memory
 
 console = Console()
 
-BANNER = """
-[bold cyan]╔═══════════════════════════════════════════════════════╗
-║              ⚡ KaliMentor v0.2.0 ⚡                  ║
-║       Agentic Cybersecurity Learning Framework        ║
-╚═══════════════════════════════════════════════════════╝[/bold cyan]"""
+BANNER = """\
+[bold cyan]
+╔═══════════════════════════════════════════════════════╗
+║              KaliMentor  —  Agentic Mode              ║
+║       Native tool_use loop  |  5-provider LLM        ║
+╚═══════════════════════════════════════════════════════╝
+[/bold cyan]"""
 
-HELP_TEXT = """
-[bold]Commands:[/bold]
-  [cyan]next[/cyan]      — Get AI-proposed next actions and execute them
-  [cyan]status[/cyan]    — Show current session status
-  [cyan]hint[/cyan]      — Get a Socratic hint (no direct answers)
-  [cyan]research[/cyan]  — Deep-dive into a CVE, tool, or technique
-  [cyan]auto[/cyan]      — Auto-run an entire phase (recon/enum/vuln)
-  [cyan]plan[/cyan]      — Regenerate the attack plan
-  [cyan]note[/cyan]      — Add a personal note to the session
-  [cyan]export[/cyan]    — Export session as Markdown report
-  [cyan]flag[/cyan]      — Record a captured flag
-  [cyan]phase[/cyan]     — Manually set the current phase
-  [cyan]help[/cyan]      — Show this help
-  [cyan]quit[/cyan]      — Save and exit
-  [cyan]![/cyan]<cmd>    — Execute a command directly (e.g. !nmap -sV 10.10.10.1)
-  [dim]Or type any question/request in natural language[/dim]
+HELP_TEXT = """\
+[bold]Slash commands:[/bold]
+  [cyan]/plan[/cyan]    Show the current TODO list
+  [cyan]/memory[/cyan]  Show KALIMENTOR.md session memory
+  [cyan]/status[/cyan]  Show session info
+  [cyan]/tools[/cyan]   List all registered tools
+  [cyan]/mode[/cyan]    Switch interaction mode
+  [cyan]/compact[/cyan] Force context compression now  [dim](Phase 2)[/dim]
+  [cyan]/export[/cyan]  Export session report  [dim](Phase 4)[/dim]
+  [cyan]/flag[/cyan]    Record a captured flag
+  [cyan]/note[/cyan]    Add a note to memory
+  [cyan]/undo[/cyan]    Remove last message pair from history
+  [cyan]/help[/cyan]    Show this help
+  [cyan]/clear[/cyan]   Clear screen
+  [cyan]/quit[/cyan]    Save and exit
+
+[dim]Or type any natural language — the agent will act.[/dim]
 """
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Agent loop
+# ─────────────────────────────────────────────────────────────────────────────
+
 class AgentLoop:
-    """The agentic loop that drives KaliMentor sessions."""
+    """The new single-threaded tool_use agentic loop.
+
+    Args:
+        llm:          Any LLMBackend instance.
+        registry:     ToolRegistry with all tools registered.
+        system:       System prompt string.
+        mode:         "interactive" | "autonomous" | "socratic" | "yolo"
+        session_dir:  Path to session directory (for memory / history).
+    """
 
     def __init__(
         self,
-        session: SessionManager,
         llm: LLMBackend,
-        executor: ToolExecutor | None = None,
-        ui: UICallback | None = None,
-    ):
-        self.session = session
-        self.planner = Planner(llm)
+        registry: ToolRegistry,
+        system: str = "",
+        mode: str = "interactive",
+        session_dir: str = "/tmp/kalimentor",
+        session_manager: SessionManager | None = None,
+    ) -> None:
         self.llm = llm
-        self.executor = executor or ToolExecutor()
-        self.ui: UICallback = ui or ConsoleUI()
-        self.tui_mode: bool = False
-
-    async def run(self) -> None:
-        self.ui.append_log(BANNER)
-        self._print_status()
-
-        self.ui.set_status("thinking", "Connecting to LLM...")
-        try:
-            plan = await self.planner.create_initial_plan(self.session)
-            self._display_plan(plan)
-        except Exception as e:
-            self.ui.append_log(f"[yellow]Plan generation failed ({e}). You can still use manual commands.[/yellow]")
-
-        self.ui.append_log(HELP_TEXT)
-
-        if not self.tui_mode:
-            # CLI mode: interactive prompt loop
-            while True:
-                try:
-                    raw = Prompt.ask("\n[bold green]KaliMentor ⚡[/bold green]", default="next")
-                    cmd = raw.strip().lower()
-
-                    if cmd in ("quit", "exit", "q"):
-                        break
-                    elif cmd == "status":
-                        self._print_status()
-                    elif cmd == "next":
-                        await self._propose_and_execute()
-                    elif cmd == "research":
-                        await self._research()
-                    elif cmd == "hint":
-                        await self._hint()
-                    elif cmd == "auto":
-                        await self._auto_phase()
-                    elif cmd == "plan":
-                        plan = await self.planner.create_initial_plan(self.session)
-                        self._display_plan(plan)
-                    elif cmd == "note":
-                        self._add_note()
-                    elif cmd == "export":
-                        self._export()
-                    elif cmd == "flag":
-                        flag = Prompt.ask("Flag value")
-                        self.session.add_flag(flag)
-                        self.ui.append_log(f"[green]Flag recorded! Total: {len(self.session.state.flags)}[/green]")
-                    elif cmd == "phase":
-                        self._set_phase()
-                    elif cmd == "help":
-                        self.ui.append_log(HELP_TEXT)
-                    elif raw.startswith("!"):
-                        await self._direct_exec(raw[1:].strip())
-                    else:
-                        await self._propose_and_execute(raw)
-
-                except KeyboardInterrupt:
-                    self.ui.append_log("\n[yellow]Ctrl+C — type 'quit' to exit.[/yellow]")
-                except Exception as e:
-                    self.ui.set_status("error", str(e))
-
-            self.session.save()
-            self.ui.append_log(f"\n[green]Session saved: {self.session.state.id}[/green]")
+        self.registry = registry
+        self.system = system
+        self.mode = mode
+        self.session_dir = session_dir
+        self._session_manager = session_manager
+        # Load persisted history if a session manager is provided
+        if session_manager is not None:
+            self._messages: list[dict[str, Any]] = session_manager.load_messages()
+            self.session_dir = str(session_manager.session_dir)
         else:
-            # TUI mode: Textual events drive input — just signal ready and return
-            self.ui.set_status("ready")
-            self.ui.enable_input(True)
+            self._messages: list[dict[str, Any]] = []
+        self._flags: list[str] = []
+        self._notes: list[str] = []
+        # Each AgentLoop gets its own PlanStore; register it as the active module store
+        self._plan_store = PlanStore()
+        set_plan_store(self._plan_store)
 
-    # ── Core Cycle ─────────────────────────────────────────────────────
+    # ── Public entry points ───────────────────────────────────────────────
 
-    async def _propose_and_execute(self, user_input: str = "") -> None:
-        self.ui.set_status("thinking", "Waiting for LLM...")
-        self.ui.enable_input(False)
-        data = await self.planner.propose_next_actions(self.session, user_input)
-        self.ui.set_status("analyzing", "Analysing response...")
+    async def run_cli(self) -> None:
+        """Start the interactive CLI loop (blocking)."""
+        console.print(BANNER)
+        console.print(f"[dim]Mode: {self.mode}  |  LLM: {self.llm}[/dim]")
+        console.print(HELP_TEXT)
 
-        if analysis := data.get("analysis"):
-            self.ui.append_log(Panel(analysis, title="Analysis", border_style="blue"))
-        if notes := data.get("learning_notes"):
-            self.ui.append_log(Panel(notes, title="💡 Learning Note", border_style="green"))
-
-        actions_data = data.get("actions", [])
-        if not actions_data:
-            self.ui.append_log("[yellow]No actions proposed.[/yellow]")
-            self.ui.set_status("ready")
-            self.ui.enable_input(True)
-            return
-
-        proposed = []
-        tbl = Table(title="Proposed Actions", show_lines=True)
-        tbl.add_column("#", width=3, style="bold")
-        tbl.add_column("Tool", style="cyan")
-        tbl.add_column("Command", max_width=65)
-        tbl.add_column("Risk", style="yellow")
-
-        for i, a in enumerate(actions_data, 1):
-            action = ProposedAction(
-                phase=data.get("phase_recommendation", self.session.state.current_phase),
-                tool=a["tool"], command=a["command"],
-                rationale=a["rationale"],
-                expected_outcome=a.get("expected_outcome", ""),
-                risk_level=a.get("risk_level", "low"),
-                alternatives=a.get("alternatives", []),
-            )
-            proposed.append(action)
-            rc = {"info": "dim", "low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}.get(action.risk_level, "white")
-            tbl.add_row(str(i), action.tool, action.command[:65], f"[{rc}]{action.risk_level}[/]")
-
-        self.ui.append_log(tbl)
-
-        # Show rationales
-        for i, a in enumerate(proposed, 1):
-            self.ui.append_log(f"  [dim]{i}. {a.rationale}[/dim]")
-
-        if self.session.state.mode == AgentMode.SOCRATIC:
-            self.ui.append_log("[dim]Socratic mode — review proposals and execute yourself.[/dim]")
-            self.ui.set_status("ready")
-            self.ui.enable_input(True)
-            return
-
-        if self.tui_mode:
-            # TUI: auto-execute action 1; skip high/critical risk without prompting
-            sel = "1"
-        else:
-            sel = Prompt.ask("Execute? (1, 1,3, all, none)", default="1")
-
-        if sel.lower() == "none":
-            self.ui.set_status("ready")
-            self.ui.enable_input(True)
-            return
-
-        indices = list(range(len(proposed))) if sel.lower() == "all" else [int(x.strip()) - 1 for x in sel.split(",")]
-
-        for idx in indices:
-            if 0 <= idx < len(proposed):
-                action = proposed[idx]
-                if action.risk_level in ("high", "critical"):
-                    if self.tui_mode:
-                        self.ui.append_log(
-                            f"[red]⚠ {action.risk_level.upper()} RISK skipped (confirm in CLI mode): {action.command[:60]}[/red]"
-                        )
-                        continue
-                    if not Confirm.ask(f"[red]⚠ {action.risk_level.upper()} RISK:[/red] {action.command}\nProceed?", default=False):
-                        continue
-                await self._run_action(action)
-
-        self.ui.set_status("ready")
-        self.ui.enable_input(True)
-
-    async def _run_action(self, action: ProposedAction) -> None:
-        self.ui.append_log(f"\n[bold]▶[/bold] {action.command}")
-        self.ui.append_log(f"[dim]↳ {action.rationale}[/dim]")
-        self.ui.set_status("running", action.command[:60])
-
-        self.ui.set_status("running", f"Running: {action.tool}...")
-        result = await self.executor.execute(action.command)
-
-        if result.blocked:
-            self.ui.append_log(f"[red]BLOCKED: {result.block_reason}[/red]")
-            self.session.record_action(action, ActionResult(action_id=action.id, status=ActionStatus.FAILED, stderr=result.block_reason))
-            return
-
-        if result.stdout:
-            display = result.stdout[:4000]
-            if len(result.stdout) > 4000:
-                display += f"\n... ({len(result.stdout)} total chars)"
-            self.ui.append_log(Panel(display, title="Output", border_style="white"))
-
-        self.ui.set_status("processing", "Processing results...")
-
-        if result.stderr and result.exit_code != 0:
-            self.ui.append_log(Panel(result.stderr[:1000], title="Errors", border_style="red"))
-
-        tool = action.tool.split("/")[-1].split()[0]
-        findings = OutputParser.parse(tool, result.stdout, action.id)
-
-        if findings:
-            ft = Table(title=f"Findings ({len(findings)})")
-            ft.add_column("Category", style="cyan")
-            ft.add_column("Key")
-            ft.add_column("Value", style="green")
-            for f in findings[:25]:
-                ft.add_row(f.category, f.key, f.value[:60])
-            self.ui.append_log(ft)
-
-        status = ActionStatus.COMPLETED if result.exit_code == 0 else ActionStatus.FAILED
-        ar = ActionResult(
-            action_id=action.id, status=status,
-            stdout=result.stdout, stderr=result.stderr,
-            exit_code=result.exit_code, duration_seconds=result.duration_seconds,
-            findings=findings,
-        )
-        self.session.record_action(action, ar)
-
-        if result.stdout and len(result.stdout) > 100:
-            explain = False if self.tui_mode else Confirm.ask("Explain output?", default=False)
-            if explain:
-                exp = await self.planner.explain_output(tool, action.command, result.stdout, self.session)
-                self.ui.append_log(Panel(Markdown(exp), title="Explanation", border_style="green"))
-
-        self.ui.append_log(f"[dim]{result.duration_seconds}s | exit {result.exit_code}[/dim]")
-
-    async def _direct_exec(self, command: str) -> None:
-        if not command:
-            return
-        if self.executor.is_high_risk(command):
-            if not Confirm.ask("[red]⚠ High-risk command. Proceed?[/red]", default=False):
-                return
-        action = ProposedAction(
-            phase=self.session.state.current_phase, tool=command.split()[0],
-            command=command, rationale="Direct user command",
-            expected_outcome="User-defined", risk_level=RiskLevel.MEDIUM,
-        )
-        await self._run_action(action)
-
-    async def _auto_phase(self) -> None:
-        phase = Prompt.ask("Phase to auto-run", choices=["recon", "enum", "vuln"], default="recon")
-        phase_map = {"recon": Phase.RECON, "enum": Phase.ENUM, "vuln": Phase.VULN_ANALYSIS}
-        target = phase_map[phase]
-        self.ui.set_status("running", f"Auto-running {target.value}...")
-
-        for i in range(8):
-            data = await self.planner.propose_next_actions(self.session)
-            for a in data.get("actions", []):
-                if a.get("risk_level", "low") in ("high", "critical"):
-                    self.ui.append_log(f"[yellow]Skipping high-risk: {a['command'][:60]}[/yellow]")
-                    continue
-                action = ProposedAction(
-                    phase=target, tool=a["tool"], command=a["command"],
-                    rationale=a["rationale"], expected_outcome=a.get("expected_outcome", ""),
-                    risk_level=a.get("risk_level", "low"),
+        while True:
+            try:
+                raw = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: Prompt.ask("\n[bold green]KaliMentor ⚡[/bold green]"),
                 )
-                await self._run_action(action)
+                raw = raw.strip()
+                if not raw:
+                    continue
 
-        self.ui.append_log("[green]Auto-phase complete.[/green]")
-        self._print_status()
+                # Slash commands
+                if raw.startswith("/"):
+                    handled = await self._handle_slash(raw)
+                    if handled == "quit":
+                        break
+                    continue
 
-    async def _research(self) -> None:
-        topic = Prompt.ask("Research topic")
-        self.ui.set_status("thinking", f"Researching: {topic}...")
-        data = await self.planner.research_topic(topic, self.session.get_context_summary())
-        self.ui.append_log(Panel(data.get("summary", ""), title=f"Research: {topic}", border_style="magenta"))
-        for key, title in [("technical_details", "Technical Details"), ("exploitation", "Exploitation"), ("mitigation", "Mitigation"), ("practice_suggestions", "Practice")]:
-            if data.get(key):
-                self.ui.append_log(Panel(data[key], title=title))
-        if refs := data.get("references"):
-            self.ui.append_log(Panel("\n".join(refs), title="References"))
-        self.ui.set_status("ready")
-        self.ui.enable_input(True)
+                # Natural language → agent loop
+                await self.run(raw)
 
-    async def _hint(self) -> None:
-        q = Prompt.ask("What are you stuck on?")
-        hint = await self.planner.get_socratic_hint(self.session, q)
-        self.ui.append_log(Panel(Markdown(hint), title="💡 Hint", border_style="yellow"))
-        self.ui.set_status("ready")
-        self.ui.enable_input(True)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Ctrl+C — type /quit to exit.[/yellow]")
+            except Exception as e:
+                console.print(f"[red]Error: {e}[/red]")
 
-    async def _analyse_terminal_output(self, terminal_text: str) -> None:
-        """Analyse terminal output from the right pane via LLM."""
-        self.ui.set_status("analyzing", "Analysing terminal output...")
-        self.ui.enable_input(False)
-        try:
-            ctx = self.session.get_context_summary()
-            result = await self.planner.analyse_terminal_output(terminal_text, ctx)
-            self.ui.append_log(Panel(Markdown(result), title="🔍 Terminal Analysis", border_style="magenta"))
-            self.ui.set_status("done", "Analysis complete")
-        except Exception as e:
-            self.ui.set_status("error", str(e))
-        finally:
-            self.ui.enable_input(True)
-            self.ui.set_status("ready")
+    async def run(self, user_input: str) -> str:
+        """Process one user turn through the agentic loop.
 
-    # ── UI Helpers ─────────────────────────────────────────────────────
+        Runs until the LLM produces a text-only reply (no more tool calls).
+        Returns the final text response.
+        """
+        user_msg = user_message(user_input)
+        self._messages.append(user_msg)
+        self._persist_message(user_msg)
 
-    def _print_status(self) -> None:
-        s = self.session.state
+        while True:
+            # Compress context if approaching the window limit
+            if needs_compression(self._messages, self.llm.provider):
+                await self._do_compression()
+
+            # Build the system prompt with plan reminder appended
+            system = self._build_system()
+
+            # Get tool schemas in the right format for this provider
+            tools = self.registry.get_schemas(fmt=self.llm.provider)
+
+            # ── LLM call (streaming if supported, else blocking) ─────────
+            response = await self._call_llm(
+                messages=self._messages,
+                system=system,
+                tools=tools if self.mode != "socratic" else None,
+            )
+
+            # Append assistant turn to history
+            asst_msg = assistant_message(response)
+            self._messages.append(asst_msg)
+            self._persist_message(asst_msg)
+
+            # Display any text the LLM produced
+            if response.text:
+                console.print(Panel(Markdown(response.text), border_style="blue"))
+
+            # ── No tool calls → LLM is done ─────────────────────────────
+            if not response.tool_calls:
+                return response.text
+
+            # ── Execute tool calls ───────────────────────────────────────
+            tool_results = await self._execute_tool_calls(response.tool_calls)
+
+            # Append tool results to history
+            tr_msg = tool_result_message(tool_results)
+            self._messages.append(tr_msg)
+            self._persist_message(tr_msg)
+
+    # ── LLM call with optional streaming ─────────────────────────────────
+
+    async def _call_llm(
+        self,
+        messages: list[dict[str, Any]],
+        system: str,
+        tools: list[dict[str, Any]] | None,
+    ) -> LLMResponse:
+        """Call the LLM, streaming output if the backend supports it.
+
+        Falls back to blocking create_message() when stream_message() is absent.
+        Returns a fully-assembled LLMResponse.
+        """
+        from .stream import TextChunk, ToolCallEvent, UsageEvent
+        from rich.live import Live
+        from rich.text import Text
+
+        if not hasattr(self.llm, "stream_message"):
+            with Status("[cyan]Thinking…[/cyan]", console=console):
+                return await self.llm.create_message(
+                    messages=messages,
+                    system=system,
+                    tools=tools,
+                )
+
+        # ── Streaming path ───────────────────────────────────────────────
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        input_tokens = 0
+        output_tokens = 0
+        stop_reason = "end_turn"
+
+        live_text = Text()
+
+        with Live(live_text, console=console, refresh_per_second=20) as live:
+            async for event in self.llm.stream_message(
+                messages=messages,
+                system=system,
+                tools=tools,
+            ):
+                if isinstance(event, TextChunk):
+                    text_parts.append(event.text)
+                    live_text.append(event.text)
+                    live.update(live_text)
+                elif isinstance(event, ToolCallEvent):
+                    tool_calls.append(event.tool_call)
+                    stop_reason = "tool_use"
+                elif isinstance(event, UsageEvent):
+                    input_tokens = event.input_tokens
+                    output_tokens = event.output_tokens
+
+        full_text = "".join(text_parts)
+
+        # Show token usage
+        if input_tokens or output_tokens:
+            console.print(
+                f"[dim]↑ {input_tokens} tokens in | ↓ {output_tokens} tokens out[/dim]"
+            )
+
+        return LLMResponse(
+            text=full_text,
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
+            raw=None,
+        )
+
+    # ── Context compression ───────────────────────────────────────────────
+
+    async def _do_compression(self) -> None:
+        """Compress conversation history and update messages.jsonl."""
+        before = len(self._messages)
+        with Status("[magenta]Compressing context…[/magenta]", console=console):
+            self._messages = await compress(
+                self._messages,
+                self.llm,
+                session_manager=self._session_manager,
+            )
+        after = len(self._messages)
+        console.print(
+            f"[dim]Context compressed: {before} → {after} messages.[/dim]"
+        )
+
+    # ── Session persistence ───────────────────────────────────────────────
+
+    def _persist_message(self, message: dict[str, Any]) -> None:
+        """Append a single message to the session's messages.jsonl."""
+        if self._session_manager is not None:
+            self._session_manager.append_message(message)
+
+    # ── Tool execution ────────────────────────────────────────────────────
+
+    async def _execute_tool_calls(
+        self, tool_calls: list[ToolCall]
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+
+        for tc in tool_calls:
+            result_content = await self._execute_one(tc)
+            results.append({"tool_use_id": tc.id, "content": result_content})
+
+        return results
+
+    async def _execute_one(self, tc: ToolCall) -> str:
+        """Execute a single tool call, applying mode-based risk gates."""
+        risk = self.registry.effective_risk(tc.name, tc.input)
+        needs_confirm = self._mode_requires_confirm(risk)
+
+        # Display the tool call being attempted
+        self._display_tool_call(tc, risk)
+
+        if needs_confirm:
+            approved = await self._ask_confirmation(tc)
+            if not approved:
+                msg = f"[User declined {tc.name}]"
+                console.print(f"[yellow]{msg}[/yellow]")
+                return msg
+
+        # Execute
+        with Status(f"[yellow]Running {tc.name}…[/yellow]", console=console):
+            try:
+                result = await self.registry.execute(tc.name, tc.input)
+                result_str = str(result)
+            except KeyError as e:
+                result_str = f"[ERROR] Unknown tool: {e}"
+            except Exception as e:
+                result_str = f"[ERROR] Tool execution failed: {e}"
+
+        self._display_tool_result(tc.name, result_str)
+        return result_str
+
+    def _mode_requires_confirm(self, risk: ToolRiskLevel) -> bool:
+        """Determine whether this risk level requires confirmation given current mode."""
+        if self.mode == "yolo":
+            return False
+        if self.mode == "autonomous":
+            # Only DANGEROUS needs confirmation in autonomous mode
+            return risk == ToolRiskLevel.DANGEROUS
+        # interactive / socratic — CONFIRM and DANGEROUS both need approval
+        return risk in (ToolRiskLevel.CONFIRM, ToolRiskLevel.DANGEROUS)
+
+    async def _ask_confirmation(self, tc: ToolCall) -> bool:
+        """Ask the user to approve a tool call. Returns True if approved."""
+        prompt_str = f"Allow [bold cyan]{tc.name}[/bold cyan]?"
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: Confirm.ask(prompt_str, default=False),
+        )
+
+    # ── Display helpers ───────────────────────────────────────────────────
+
+    def _display_tool_call(self, tc: ToolCall, risk: ToolRiskLevel) -> None:
+        risk_color = {
+            ToolRiskLevel.SAFE: "green",
+            ToolRiskLevel.CONFIRM: "yellow",
+            ToolRiskLevel.DANGEROUS: "red",
+        }.get(risk, "white")
+
+        # Format input for display
+        input_lines = "\n".join(f"  {k}: {v}" for k, v in tc.input.items())
+        console.print(
+            Panel(
+                input_lines or "(no input)",
+                title=f"[{risk_color}]Tool: {tc.name}[/{risk_color}]  "
+                      f"[dim](risk: {risk.value})[/dim]",
+                border_style=risk_color,
+            )
+        )
+
+    def _display_tool_result(self, name: str, result: str) -> None:
+        # Truncate long results for display (full result still goes to LLM)
+        display = result if len(result) <= 3000 else result[:3000] + "\n[…truncated for display]"
+        console.print(
+            Panel(display, title=f"[dim]Result: {name}[/dim]", border_style="dim")
+        )
+
+    # ── System prompt construction ────────────────────────────────────────
+
+    def _build_system(self) -> str:
+        parts = [self.system]
+
+        # Prepend KALIMENTOR.md so the LLM always has the latest session memory
+        memory_text = self._read_memory()
+        if memory_text:
+            parts.append(f"\n\n---\n[Session Memory — KALIMENTOR.md]\n{memory_text}\n---")
+
+        plan_reminder = self._plan_store.as_reminder()
+        if plan_reminder:
+            parts.append(f"\n\n{plan_reminder}")
+
+        if self.mode == "socratic":
+            parts.append(
+                "\n\n[Socratic mode] Explain what you WOULD do and why, "
+                "but do NOT call any tools. The user will execute manually."
+            )
+        return "\n".join(parts)
+
+    def _read_memory(self) -> str:
+        """Return KALIMENTOR.md contents if the session dir is set."""
+        from pathlib import Path
+        d = Path(self.session_dir)
+        mem = d / "KALIMENTOR.md"
+        if not mem.exists():
+            return ""
+        text = mem.read_text(encoding="utf-8", errors="replace").strip()
+        # Skip injection if it's just the blank template
+        from .memory import MEMORY_TEMPLATE
+        if text == MEMORY_TEMPLATE.strip():
+            return ""
+        return text
+
+    # ── Slash command handler ─────────────────────────────────────────────
+
+    async def _handle_slash(self, raw: str) -> str | None:
+        parts = raw.lstrip("/").split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+
+        if cmd == "quit":
+            if self._session_manager is not None:
+                self._session_manager.save()
+                console.print(
+                    f"[green]Session saved.[/green] "
+                    f"[dim]Resume with: kalimentor resume {self._session_manager.state.id}[/dim]"
+                )
+            console.print("[green]Goodbye.[/green]")
+            return "quit"
+
+        elif cmd == "clear":
+            console.clear()
+
+        elif cmd == "help":
+            console.print(HELP_TEXT)
+
+        elif cmd == "plan":
+            console.print(self._plan_store.as_table())
+
+        elif cmd == "memory":
+            await self._show_memory()
+
+        elif cmd == "status":
+            self._show_status()
+
+        elif cmd == "tools":
+            self._show_tools()
+
+        elif cmd == "mode":
+            if arg in ("interactive", "autonomous", "socratic", "yolo"):
+                self.mode = arg
+                console.print(f"[green]Mode switched to: {self.mode}[/green]")
+                if self.mode == "yolo":
+                    console.print(
+                        "[bold red]WARNING: YOLO mode — all confirmations disabled. "
+                        "Use only in CTF environments.[/bold red]"
+                    )
+            else:
+                console.print(
+                    "[yellow]Available modes: interactive, autonomous, socratic, yolo[/yellow]"
+                )
+
+        elif cmd == "flag":
+            flag = arg or await asyncio.get_running_loop().run_in_executor(
+                None, lambda: Prompt.ask("Flag value")
+            )
+            if flag:
+                self._flags.append(flag)
+                console.print(f"[green]Flag recorded: {flag}[/green]")
+
+        elif cmd == "note":
+            note = arg or await asyncio.get_running_loop().run_in_executor(
+                None, lambda: Prompt.ask("Note")
+            )
+            if note:
+                self._notes.append(note)
+                # Also write to memory via the tool if registered
+                if self.registry.get("write_memory"):
+                    memory_tool = self.registry.get("write_memory")
+                    if memory_tool:
+                        pass  # User notes appended to memory in Phase 2
+                console.print("[green]Note saved.[/green]")
+
+        elif cmd == "undo":
+            # Remove last user + assistant message pair
+            if len(self._messages) >= 2:
+                self._messages = self._messages[:-2]
+                console.print("[yellow]Last message pair removed from history.[/yellow]")
+            else:
+                console.print("[yellow]Nothing to undo.[/yellow]")
+
+        elif cmd == "compact":
+            if not self._messages:
+                console.print("[yellow]No messages to compress.[/yellow]")
+            else:
+                await self._do_compression()
+
+        elif cmd == "export":
+            console.print("[dim]/export will be available in Phase 4.[/dim]")
+
+        else:
+            console.print(f"[yellow]Unknown command: /{cmd}. Type /help for options.[/yellow]")
+
+        return None
+
+    # ── Info display helpers ──────────────────────────────────────────────
+
+    async def _show_memory(self) -> None:
+        read_tool = self.registry.get("read_memory")
+        if read_tool:
+            content = await read_tool.handler()
+            console.print(Panel(content, title="KALIMENTOR.md", border_style="magenta"))
+        else:
+            console.print("[yellow]Memory tool not registered.[/yellow]")
+
+    def _show_status(self) -> None:
         tbl = Table(title="Session Status", show_lines=True)
         tbl.add_column("", style="cyan", width=16)
         tbl.add_column("")
-        tbl.add_row("Session", s.id)
-        tbl.add_row("Objective", s.objective)
-        tbl.add_row("Target", s.target.ip or s.target.url or "N/A")
-        tbl.add_row("Type", s.target.challenge_type)
-        tbl.add_row("Phase", s.current_phase.value)
-        tbl.add_row("Mode", s.mode)
-        tbl.add_row("LLM", f"{s.llm_provider} ({s.llm_model or 'default'})")
-        tbl.add_row("Access", s.access_level)
-        tbl.add_row("Ports", ", ".join(s.open_ports) or "—")
-        tbl.add_row("Findings", str(len(s.findings)))
-        tbl.add_row("Actions", str(len(s.action_history)))
-        tbl.add_row("Flags", str(len(s.flags)))
-        self.ui.append_log(tbl)
+        tbl.add_row("LLM", str(self.llm))
+        tbl.add_row("Mode", self.mode)
+        tbl.add_row("Messages", str(len(self._messages)))
+        tbl.add_row("Tools", str(len(self.registry.list_tools())))
+        tbl.add_row("Flags", str(len(self._flags)))
+        tbl.add_row("Notes", str(len(self._notes)))
+        tbl.add_row("Session dir", self.session_dir)
+        console.print(tbl)
 
-    def _display_plan(self, plan) -> None:
-        tbl = Table(title=f"Attack Plan: {plan.methodology}", show_lines=True)
-        tbl.add_column("#", width=3)
-        tbl.add_column("Phase", style="cyan")
+    def _show_tools(self) -> None:
+        tbl = Table(title="Registered Tools", show_lines=True)
+        tbl.add_column("Name", style="cyan")
+        tbl.add_column("Risk", width=10)
         tbl.add_column("Description")
-        tbl.add_column("Tools", style="green")
-        for i, step in enumerate(plan.steps, 1):
-            tbl.add_row(str(i), step.phase, step.description, ", ".join(step.tools))
-        self.ui.append_log(tbl)
-        if plan.notes:
-            self.ui.append_log(f"[dim]Note: {plan.notes}[/dim]")
-
-    def _add_note(self) -> None:
-        note = Prompt.ask("Note")
-        self.session.add_note(note)
-        self.ui.append_log("[green]Saved.[/green]")
-
-    def _set_phase(self) -> None:
-        phases = [p.value for p in Phase]
-        self.ui.append_log(f"Available: {', '.join(phases)}")
-        p = Prompt.ask("Phase", choices=phases)
-        self.session.advance_phase(Phase(p))
-        self.ui.append_log(f"[green]Phase set to {p}[/green]")
-
-    def _export(self) -> None:
-        report = self.session.export_markdown()
-        path = self.session.save().parent / f"{self.session.state.id}_report.md"
-        path.write_text(report)
-        self.ui.append_log(f"[green]Exported: {path}[/green]")
+        risk_colors = {
+            ToolRiskLevel.SAFE: "green",
+            ToolRiskLevel.CONFIRM: "yellow",
+            ToolRiskLevel.DANGEROUS: "red",
+        }
+        for tool in sorted(self.registry.list_tools(), key=lambda t: t.name):
+            color = risk_colors.get(tool.risk_level, "white")
+            tbl.add_row(
+                tool.name,
+                f"[{color}]{tool.risk_level.value}[/{color}]",
+                tool.description[:80],
+            )
+        console.print(tbl)
