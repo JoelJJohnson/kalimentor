@@ -17,3 +17,12 @@ async def test_chat_log_append():
         log = pilot.app.query_one(ChatLog)
         log.append_log("Hello world")
         assert log is not None
+
+def test_status_bar_import():
+    from src.ui.widgets import StatusBar
+    assert StatusBar is not None
+
+def test_status_bar_states():
+    from src.ui.widgets import STATE_STYLES
+    for state in ["ready", "thinking", "analyzing", "running", "processing", "done", "error"]:
+        assert state in STATE_STYLES
