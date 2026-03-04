@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rich.console import RenderableType
 from textual.app import App, ComposeResult
-from textual.widgets import Static, Input, Rule
+from textual.widgets import Static, Input
 from textual.containers import Vertical
 
 from ..core.agent import AgentLoop, UICallback
@@ -81,39 +81,41 @@ class KaliMentorApp(App):
         width: 1fr;
         height: 1fr;
     }
-    #input-rule-top {
+    #input-separator-top {
         height: 1;
-        color: #30363d;
         background: #0d1117;
+        color: #444c56;
         dock: bottom;
-        margin: 0;
+        padding: 0 0;
     }
     #prompt-input {
         height: 1;
         border: none;
-        background: #0d1117;
+        background: #161b22;
         color: #e6edf3;
         padding: 0 1;
         dock: bottom;
     }
     #prompt-input:focus {
         border: none;
-        background: #0d1117;
+        background: #161b22;
     }
     #prompt-input:disabled {
+        background: #161b22;
         color: #6e7681;
     }
-    #input-rule-bottom {
+    #input-separator-bottom {
         height: 1;
-        color: #30363d;
         background: #0d1117;
+        color: #444c56;
         dock: bottom;
-        margin: 0;
+        padding: 0 0;
     }
     #status-line {
         height: 1;
         padding: 0 2;
         background: #0d1117;
+        color: #6e7681;
         dock: bottom;
     }
     """
@@ -134,9 +136,9 @@ class KaliMentorApp(App):
         with Vertical(id="chat-pane"):
             yield ChatLog(id="chat-log", max_lines=2000, markup=True, highlight=True)
         yield Static("[dim]●  Ready[/dim]", id="status-line")
-        yield Rule(id="input-rule-bottom")
+        yield Static("─" * 200, id="input-separator-bottom")
         yield Input(placeholder="> Ask anything or type a command...", id="prompt-input")
-        yield Rule(id="input-rule-top")
+        yield Static("─" * 200, id="input-separator-top")
 
     def on_mount(self) -> None:
         log = self.query_one(ChatLog)
