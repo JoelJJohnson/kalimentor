@@ -343,6 +343,21 @@ class AgentLoop:
         self.ui.set_status("ready")
         self.ui.enable_input(True)
 
+    async def _analyse_terminal_output(self, terminal_text: str) -> None:
+        """Analyse terminal output from the right pane via LLM."""
+        self.ui.set_status("analyzing", "Analysing terminal output...")
+        self.ui.enable_input(False)
+        try:
+            ctx = self.session.get_context_summary()
+            result = await self.planner.analyse_terminal_output(terminal_text, ctx)
+            self.ui.append_log(Panel(Markdown(result), title="🔍 Terminal Analysis", border_style="magenta"))
+            self.ui.set_status("done", "Analysis complete")
+        except Exception as e:
+            self.ui.set_status("error", str(e))
+        finally:
+            self.ui.enable_input(True)
+            self.ui.set_status("ready")
+
     # ── UI Helpers ─────────────────────────────────────────────────────
 
     def _print_status(self) -> None:
