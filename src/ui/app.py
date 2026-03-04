@@ -5,7 +5,7 @@ from __future__ import annotations
 from rich.console import RenderableType
 from textual.app import App, ComposeResult
 from textual.widgets import Static
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical  # Horizontal used by bottom-bar
 
 from ..core.agent import AgentLoop, UICallback
 from ..core.session import SessionManager
@@ -50,28 +50,20 @@ class KaliMentorApp(App):
         color: #58a6ff;
         padding: 0 1;
     }
-    #left-pane {
-        width: 60%;
-        border-right: solid #30363d;
-    }
-    #right-pane {
-        width: 40%;
-        background: #0d1117;
-    }
-    #terminal-placeholder {
-        padding: 1;
-        color: #6e7681;
+    #chat-pane {
+        width: 1fr;
     }
     #bottom-bar {
-        height: 3;
+        height: 5;
         border-top: solid #30363d;
+        background: #0d1117;
     }
     StatusBar {
-        width: 30%;
+        width: 25%;
         padding: 1 1;
     }
     ChatInput {
-        width: 70%;
+        width: 75%;
     }
     """
 
@@ -88,27 +80,8 @@ class KaliMentorApp(App):
             f"⚡ KaliMentor v0.2.0  │  {s.id}  │  {s.llm_provider}/{s.llm_model or 'default'}  │  Target: {target}",
             id="header-bar",
         )
-        with Horizontal():
-            with Vertical(id="left-pane"):
-                yield ChatLog(id="chat-log", max_lines=2000, markup=True, highlight=True)
-            with Vertical(id="right-pane"):
-                if self.tmux_pane:
-                    yield Static(
-                        f"🖥️  bash — tmux pane [bold]{self.tmux_pane}[/bold]\n\n"
-                        "Run your commands here.\n"
-                        "Press [bold cyan]Ctrl+A[/bold cyan] to send output to AI for analysis.",
-                        id="terminal-placeholder",
-                        markup=True,
-                    )
-                else:
-                    yield Static(
-                        "⚠️  tmux not detected.\n\n"
-                        "For split-terminal support, run inside tmux:\n"
-                        "  [bold cyan]tmux new-session kalimentor start -t <ip>[/bold cyan]\n\n"
-                        "Or install tmux:  sudo apt install tmux",
-                        id="terminal-placeholder",
-                        markup=True,
-                    )
+        with Vertical(id="chat-pane"):
+            yield ChatLog(id="chat-log", max_lines=2000, markup=True, highlight=True)
         with Horizontal(id="bottom-bar"):
             yield StatusBar(id="status-bar")
             yield ChatInput(id="chat-input")
