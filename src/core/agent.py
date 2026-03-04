@@ -33,6 +33,32 @@ class UICallback(Protocol):
     def enable_input(self, enabled: bool) -> None: ...
 
 
+class ConsoleUI:
+    """Fallback UI that prints to the Rich console (non-TUI mode)."""
+    def __init__(self):
+        self._console = Console()
+
+    def append_log(self, renderable: RenderableType) -> None:
+        self._console.print(renderable)
+
+    def set_status(self, state: str, message: str = "") -> None:
+        icons = {
+            "thinking": "[cyan]⠋[/cyan]",
+            "analyzing": "[cyan]⠙[/cyan]",
+            "running": "[yellow]⠹[/yellow]",
+            "processing": "[yellow]⠸[/yellow]",
+            "done": "[green]✓[/green]",
+            "error": "[red]✗[/red]",
+            "ready": "[dim]●[/dim]",
+        }
+        icon = icons.get(state, "●")
+        if message:
+            self._console.print(f"{icon}  {message}", highlight=False)
+
+    def enable_input(self, enabled: bool) -> None:
+        pass  # No-op for console mode
+
+
 console = Console()
 
 BANNER = """
