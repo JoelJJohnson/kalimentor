@@ -104,6 +104,18 @@ Explain:
 
 Be concise but thorough. Respond in natural text."""
 
+TERMINAL_ANALYSIS_SYSTEM = """You are an expert penetration tester reviewing terminal output from a live pentesting session.
+
+The user has captured their terminal screen and wants your analysis.
+
+Analyse the output and provide:
+1. Key findings — what is revealed (open ports, services, credentials, errors, paths, etc.)
+2. Interesting observations — anything anomalous or significant
+3. Suggested next steps — concrete follow-up actions based on what you see
+4. Learning note — one educational takeaway from this output
+
+Respond in clear natural text with sections. Be concise and actionable."""
+
 
 class Planner:
     """LLM-powered planning engine."""
@@ -154,3 +166,10 @@ class Planner:
         ctx = session.get_context_summary()
         user_msg = f"Tool: {tool}\nCommand: {command}\nOutput:\n{output[:3000]}\n\nSession:\n{ctx}"
         return await self.llm.complete(EXPLAIN_SYSTEM, user_msg)
+
+    async def analyse_terminal_output(self, terminal_text: str, session_context: str = "") -> str:
+        user_msg = (
+            f"Session context:\n{session_context}\n\n"
+            f"Terminal output to analyse:\n```\n{terminal_text[:4000]}\n```"
+        )
+        return await self.llm.complete(TERMINAL_ANALYSIS_SYSTEM, user_msg)
