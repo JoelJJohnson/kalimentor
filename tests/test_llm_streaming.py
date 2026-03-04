@@ -113,3 +113,78 @@ async def test_openai_stream_text_only():
     assert len(usage_events) == 1
     assert usage_events[0].input_tokens == 5
     assert usage_events[0].output_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_gemini_stream_text_only():
+    """Gemini stream_message yields TextChunk events."""
+    from src.core.llm import GeminiBackend
+    backend = GeminiBackend(model="gemini-2.5-flash", api_key="test-key")
+
+    sse_lines = [
+        'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"},"finishReason":null}]}',
+        'data: {"candidates":[{"content":{"parts":[{"text":" world"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3}}',
+    ]
+
+    async def mock_aiter_lines():
+        for line in sse_lines:
+            yield line
+
+    mock_response = MagicMock()
+    mock_response.aiter_lines = mock_aiter_lines
+    mock_response.raise_for_status = MagicMock()
+
+    mock_stream_cm = AsyncMock()
+    mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch('httpx.AsyncClient') as MockClient:
+        mock_client = AsyncMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client.stream = MagicMock(return_value=mock_stream_cm)
+
+        events = await collect(backend.stream_message(
+            messages=[{"role": "user", "content": "hi"}],
+        ))
+
+    text_events = [e for e in events if isinstance(e, TextChunk)]
+    assert [e.text for e in text_events] == ["Hello", " world"]
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_text_only():
+    """Ollama stream_message yields TextChunk events from ndjson."""
+    from src.core.llm import OllamaBackend
+    backend = OllamaBackend(model="llama3.1")
+
+    ndjson_lines = [
+        '{"message":{"role":"assistant","content":"Hi"},"done":false}',
+        '{"message":{"role":"assistant","content":" there"},"done":false}',
+        '{"message":{"role":"assistant","content":"","tool_calls":[]},"done":true}',
+    ]
+
+    async def mock_aiter_lines():
+        for line in ndjson_lines:
+            yield line
+
+    mock_response = MagicMock()
+    mock_response.aiter_lines = mock_aiter_lines
+    mock_response.raise_for_status = MagicMock()
+
+    mock_stream_cm = AsyncMock()
+    mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch('httpx.AsyncClient') as MockClient:
+        mock_client = AsyncMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client.stream = MagicMock(return_value=mock_stream_cm)
+
+        events = await collect(backend.stream_message(
+            messages=[{"role": "user", "content": "hi"}],
+        ))
+
+    text_events = [e for e in events if isinstance(e, TextChunk)]
+    assert [e.text for e in text_events] == ["Hi", " there"]

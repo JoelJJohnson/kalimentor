@@ -452,6 +452,74 @@ class GeminiBackend(LLMBackend):
             raw=data,
         )
 
+    def _stream_url(self) -> str:
+        return (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.model}:streamGenerateContent?alt=sse&key={self.api_key}"
+        )
+
+    async def stream_message(
+        self,
+        messages: list[dict[str, Any]],
+        system: str = "",
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ):
+        """Streaming variant — yields StreamEvent objects."""
+        from .stream import TextChunk, ToolCallEvent, UsageEvent
+
+        body: dict[str, Any] = {
+            "contents": self._to_gemini_messages(messages),
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+            },
+        }
+        if system:
+            body["system_instruction"] = {"parts": [{"text": system}]}
+        if tools:
+            body["tools"] = [{"function_declarations": tools}]
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST",
+                self._stream_url(),
+                headers={"Content-Type": "application/json"},
+                json=body,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    raw = line[6:].strip()
+                    if not raw:
+                        continue
+                    try:
+                        chunk = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+
+                    for candidate in chunk.get("candidates", []):
+                        content = candidate.get("content", {})
+                        for part in content.get("parts", []):
+                            if "text" in part:
+                                yield TextChunk(text=part["text"])
+                            elif "functionCall" in part:
+                                fc = part["functionCall"]
+                                yield ToolCallEvent(tool_call=ToolCall(
+                                    id=uuid.uuid4().hex,
+                                    name=fc.get("name", ""),
+                                    input=fc.get("args", {}),
+                                ))
+
+                    usage = chunk.get("usageMetadata", {})
+                    if usage:
+                        yield UsageEvent(
+                            input_tokens=usage.get("promptTokenCount", 0),
+                            output_tokens=usage.get("candidatesTokenCount", 0),
+                        )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  DEEPSEEK  (OpenAI-compatible format)
@@ -846,6 +914,61 @@ class OllamaBackend(LLMBackend):
         done_reason = data.get("done_reason", "stop")
         stop_reason = "max_tokens" if done_reason == "length" else "end_turn"
         return LLMResponse(text=text, tool_calls=[], stop_reason=stop_reason, raw=data)
+
+    async def stream_message(
+        self,
+        messages: list[dict[str, Any]],
+        system: str = "",
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ):
+        """Streaming variant — yields StreamEvent objects (no UsageEvent for Ollama)."""
+        from .stream import TextChunk, ToolCallEvent
+
+        all_messages = list(messages)
+        if system and (not all_messages or all_messages[0].get("role") != "system"):
+            all_messages = [{"role": "system", "content": system}] + all_messages
+
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": all_messages,
+            "stream": True,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        if tools and self._supports_tools():
+            body["tools"] = tools
+
+        async with httpx.AsyncClient(timeout=180) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/api/chat",
+                json=body,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    message = chunk.get("message", {})
+                    content = message.get("content", "")
+                    if content:
+                        yield TextChunk(text=content)
+
+                    # Tool calls only appear in the final done=true chunk
+                    if chunk.get("done"):
+                        for tc in message.get("tool_calls", []):
+                            fn = tc.get("function", {})
+                            yield ToolCallEvent(tool_call=ToolCall(
+                                id=uuid.uuid4().hex,
+                                name=fn.get("name", ""),
+                                input=fn.get("arguments", {}),
+                            ))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
