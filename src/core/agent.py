@@ -89,24 +89,32 @@ HELP_TEXT = """
 class AgentLoop:
     """The agentic loop that drives KaliMentor sessions."""
 
-    def __init__(self, session: SessionManager, llm: LLMBackend, executor: ToolExecutor | None = None):
+    def __init__(
+        self,
+        session: SessionManager,
+        llm: LLMBackend,
+        executor: ToolExecutor | None = None,
+        ui: UICallback | None = None,
+    ):
         self.session = session
         self.planner = Planner(llm)
         self.llm = llm
         self.executor = executor or ToolExecutor()
+        self.ui: UICallback = ui or ConsoleUI()
+        self.tui_mode: bool = False
 
     async def run(self) -> None:
-        console.print(BANNER)
+        self.ui.append_log(BANNER)
         self._print_status()
 
-        console.print("\n[bold cyan]Generating attack plan...[/bold cyan]")
+        self.ui.set_status("thinking", "Generating attack plan...")
         try:
             plan = await self.planner.create_initial_plan(self.session)
             self._display_plan(plan)
         except Exception as e:
-            console.print(f"[yellow]Plan generation failed ({e}). You can still use manual commands.[/yellow]")
+            self.ui.append_log(f"[yellow]Plan generation failed ({e}). You can still use manual commands.[/yellow]")
 
-        console.print(HELP_TEXT)
+        self.ui.append_log(HELP_TEXT)
 
         while True:
             try:
@@ -135,38 +143,41 @@ class AgentLoop:
                 elif cmd == "flag":
                     flag = Prompt.ask("Flag value")
                     self.session.add_flag(flag)
-                    console.print(f"[green]Flag recorded! Total: {len(self.session.state.flags)}[/green]")
+                    self.ui.append_log(f"[green]Flag recorded! Total: {len(self.session.state.flags)}[/green]")
                 elif cmd == "phase":
                     self._set_phase()
                 elif cmd == "help":
-                    console.print(HELP_TEXT)
+                    self.ui.append_log(HELP_TEXT)
                 elif raw.startswith("!"):
                     await self._direct_exec(raw[1:].strip())
                 else:
                     await self._propose_and_execute(raw)
 
             except KeyboardInterrupt:
-                console.print("\n[yellow]Ctrl+C — type 'quit' to exit.[/yellow]")
+                self.ui.append_log("\n[yellow]Ctrl+C — type 'quit' to exit.[/yellow]")
             except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
+                self.ui.set_status("error", str(e))
 
         self.session.save()
-        console.print(f"\n[green]Session saved: {self.session.state.id}[/green]")
+        self.ui.append_log(f"\n[green]Session saved: {self.session.state.id}[/green]")
 
     # ── Core Cycle ─────────────────────────────────────────────────────
 
     async def _propose_and_execute(self, user_input: str = "") -> None:
-        console.print("\n[cyan]Analyzing...[/cyan]")
+        self.ui.set_status("analyzing", "Analyzing...")
+        self.ui.enable_input(False)
         data = await self.planner.propose_next_actions(self.session, user_input)
 
         if analysis := data.get("analysis"):
-            console.print(Panel(analysis, title="Analysis", border_style="blue"))
+            self.ui.append_log(Panel(analysis, title="Analysis", border_style="blue"))
         if notes := data.get("learning_notes"):
-            console.print(Panel(notes, title="💡 Learning Note", border_style="green"))
+            self.ui.append_log(Panel(notes, title="💡 Learning Note", border_style="green"))
 
         actions_data = data.get("actions", [])
         if not actions_data:
-            console.print("[yellow]No actions proposed.[/yellow]")
+            self.ui.append_log("[yellow]No actions proposed.[/yellow]")
+            self.ui.set_status("ready")
+            self.ui.enable_input(True)
             return
 
         proposed = []
@@ -189,18 +200,22 @@ class AgentLoop:
             rc = {"info": "dim", "low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}.get(action.risk_level, "white")
             tbl.add_row(str(i), action.tool, action.command[:65], f"[{rc}]{action.risk_level}[/]")
 
-        console.print(tbl)
+        self.ui.append_log(tbl)
 
         # Show rationales
         for i, a in enumerate(proposed, 1):
-            console.print(f"  [dim]{i}. {a.rationale}[/dim]")
+            self.ui.append_log(f"  [dim]{i}. {a.rationale}[/dim]")
 
         if self.session.state.mode == AgentMode.SOCRATIC:
-            console.print("[dim]Socratic mode — review proposals and execute yourself.[/dim]")
+            self.ui.append_log("[dim]Socratic mode — review proposals and execute yourself.[/dim]")
+            self.ui.set_status("ready")
+            self.ui.enable_input(True)
             return
 
         sel = Prompt.ask("Execute? (1, 1,3, all, none)", default="1")
         if sel.lower() == "none":
+            self.ui.set_status("ready")
+            self.ui.enable_input(True)
             return
 
         indices = list(range(len(proposed))) if sel.lower() == "all" else [int(x.strip()) - 1 for x in sel.split(",")]
@@ -213,14 +228,18 @@ class AgentLoop:
                         continue
                 await self._run_action(action)
 
+        self.ui.set_status("ready")
+        self.ui.enable_input(True)
+
     async def _run_action(self, action: ProposedAction) -> None:
-        console.print(f"\n[bold]▶[/bold] {action.command}")
-        console.print(f"[dim]↳ {action.rationale}[/dim]")
+        self.ui.append_log(f"\n[bold]▶[/bold] {action.command}")
+        self.ui.append_log(f"[dim]↳ {action.rationale}[/dim]")
+        self.ui.set_status("running", action.command[:60])
 
         result = await self.executor.execute(action.command)
 
         if result.blocked:
-            console.print(f"[red]BLOCKED: {result.block_reason}[/red]")
+            self.ui.append_log(f"[red]BLOCKED: {result.block_reason}[/red]")
             self.session.record_action(action, ActionResult(action_id=action.id, status=ActionStatus.FAILED, stderr=result.block_reason))
             return
 
@@ -228,10 +247,12 @@ class AgentLoop:
             display = result.stdout[:4000]
             if len(result.stdout) > 4000:
                 display += f"\n... ({len(result.stdout)} total chars)"
-            console.print(Panel(display, title="Output", border_style="white"))
+            self.ui.append_log(Panel(display, title="Output", border_style="white"))
+
+        self.ui.set_status("processing", "Processing results...")
 
         if result.stderr and result.exit_code != 0:
-            console.print(Panel(result.stderr[:1000], title="Errors", border_style="red"))
+            self.ui.append_log(Panel(result.stderr[:1000], title="Errors", border_style="red"))
 
         tool = action.tool.split("/")[-1].split()[0]
         findings = OutputParser.parse(tool, result.stdout, action.id)
@@ -243,7 +264,7 @@ class AgentLoop:
             ft.add_column("Value", style="green")
             for f in findings[:25]:
                 ft.add_row(f.category, f.key, f.value[:60])
-            console.print(ft)
+            self.ui.append_log(ft)
 
         status = ActionStatus.COMPLETED if result.exit_code == 0 else ActionStatus.FAILED
         ar = ActionResult(
@@ -257,9 +278,9 @@ class AgentLoop:
         if result.stdout and len(result.stdout) > 100:
             if Confirm.ask("Explain output?", default=False):
                 exp = await self.planner.explain_output(tool, action.command, result.stdout, self.session)
-                console.print(Panel(Markdown(exp), title="Explanation", border_style="green"))
+                self.ui.append_log(Panel(Markdown(exp), title="Explanation", border_style="green"))
 
-        console.print(f"[dim]{result.duration_seconds}s | exit {result.exit_code}[/dim]")
+        self.ui.append_log(f"[dim]{result.duration_seconds}s | exit {result.exit_code}[/dim]")
 
     async def _direct_exec(self, command: str) -> None:
         if not command:
@@ -278,13 +299,13 @@ class AgentLoop:
         phase = Prompt.ask("Phase to auto-run", choices=["recon", "enum", "vuln"], default="recon")
         phase_map = {"recon": Phase.RECON, "enum": Phase.ENUM, "vuln": Phase.VULN_ANALYSIS}
         target = phase_map[phase]
-        console.print(f"\n[bold cyan]Auto-running {target.value}...[/bold cyan]")
+        self.ui.set_status("running", f"Auto-running {target.value}...")
 
         for i in range(8):
             data = await self.planner.propose_next_actions(self.session)
             for a in data.get("actions", []):
                 if a.get("risk_level", "low") in ("high", "critical"):
-                    console.print(f"[yellow]Skipping high-risk: {a['command'][:60]}[/yellow]")
+                    self.ui.append_log(f"[yellow]Skipping high-risk: {a['command'][:60]}[/yellow]")
                     continue
                 action = ProposedAction(
                     phase=target, tool=a["tool"], command=a["command"],
@@ -293,24 +314,28 @@ class AgentLoop:
                 )
                 await self._run_action(action)
 
-        console.print("[green]Auto-phase complete.[/green]")
+        self.ui.append_log("[green]Auto-phase complete.[/green]")
         self._print_status()
 
     async def _research(self) -> None:
         topic = Prompt.ask("Research topic")
-        console.print(f"[cyan]Researching: {topic}...[/cyan]")
+        self.ui.set_status("thinking", f"Researching: {topic}...")
         data = await self.planner.research_topic(topic, self.session.get_context_summary())
-        console.print(Panel(data.get("summary", ""), title=f"Research: {topic}", border_style="magenta"))
+        self.ui.append_log(Panel(data.get("summary", ""), title=f"Research: {topic}", border_style="magenta"))
         for key, title in [("technical_details", "Technical Details"), ("exploitation", "Exploitation"), ("mitigation", "Mitigation"), ("practice_suggestions", "Practice")]:
             if data.get(key):
-                console.print(Panel(data[key], title=title))
+                self.ui.append_log(Panel(data[key], title=title))
         if refs := data.get("references"):
-            console.print(Panel("\n".join(refs), title="References"))
+            self.ui.append_log(Panel("\n".join(refs), title="References"))
+        self.ui.set_status("ready")
+        self.ui.enable_input(True)
 
     async def _hint(self) -> None:
         q = Prompt.ask("What are you stuck on?")
         hint = await self.planner.get_socratic_hint(self.session, q)
-        console.print(Panel(Markdown(hint), title="💡 Hint", border_style="yellow"))
+        self.ui.append_log(Panel(Markdown(hint), title="💡 Hint", border_style="yellow"))
+        self.ui.set_status("ready")
+        self.ui.enable_input(True)
 
     # ── UI Helpers ─────────────────────────────────────────────────────
 
@@ -331,7 +356,7 @@ class AgentLoop:
         tbl.add_row("Findings", str(len(s.findings)))
         tbl.add_row("Actions", str(len(s.action_history)))
         tbl.add_row("Flags", str(len(s.flags)))
-        console.print(tbl)
+        self.ui.append_log(tbl)
 
     def _display_plan(self, plan) -> None:
         tbl = Table(title=f"Attack Plan: {plan.methodology}", show_lines=True)
@@ -341,24 +366,24 @@ class AgentLoop:
         tbl.add_column("Tools", style="green")
         for i, step in enumerate(plan.steps, 1):
             tbl.add_row(str(i), step.phase, step.description, ", ".join(step.tools))
-        console.print(tbl)
+        self.ui.append_log(tbl)
         if plan.notes:
-            console.print(f"[dim]Note: {plan.notes}[/dim]")
+            self.ui.append_log(f"[dim]Note: {plan.notes}[/dim]")
 
     def _add_note(self) -> None:
         note = Prompt.ask("Note")
         self.session.add_note(note)
-        console.print("[green]Saved.[/green]")
+        self.ui.append_log("[green]Saved.[/green]")
 
     def _set_phase(self) -> None:
         phases = [p.value for p in Phase]
-        console.print(f"Available: {', '.join(phases)}")
+        self.ui.append_log(f"Available: {', '.join(phases)}")
         p = Prompt.ask("Phase", choices=phases)
         self.session.advance_phase(Phase(p))
-        console.print(f"[green]Phase set to {p}[/green]")
+        self.ui.append_log(f"[green]Phase set to {p}[/green]")
 
     def _export(self) -> None:
         report = self.session.export_markdown()
         path = self.session.save().parent / f"{self.session.state.id}_report.md"
         path.write_text(report)
-        console.print(f"[green]Exported: {path}[/green]")
+        self.ui.append_log(f"[green]Exported: {path}[/green]")
