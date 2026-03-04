@@ -29,13 +29,13 @@ class TUICallback:
         self._input = chat_input
 
     def append_log(self, renderable: RenderableType) -> None:
-        self._log.call_from_thread(self._log.append_log, renderable)
+        self._log.append_log(renderable)
 
     def set_status(self, state: str, message: str = "") -> None:
-        self._status.call_from_thread(self._status.set_status, state, message)
+        self._status.set_status(state, message)
 
     def enable_input(self, enabled: bool) -> None:
-        self._input.call_from_thread(self._input.set_enabled, enabled)
+        self._input.set_enabled(enabled)
 
 
 class KaliMentorApp(App):
