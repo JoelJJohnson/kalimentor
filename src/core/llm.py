@@ -230,6 +230,8 @@ class AnthropicBackend(LLMBackend):
         tool_blocks: dict[int, dict[str, Any]] = {}
         # Track which block index is currently "open" and what type it is
         block_types: dict[int, str] = {}
+        # Track input tokens from message_start event
+        _input_tokens: int = 0
 
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream(
@@ -254,10 +256,7 @@ class AnthropicBackend(LLMBackend):
 
                     if etype == "message_start":
                         usage = event.get("message", {}).get("usage", {})
-                        input_tok = usage.get("input_tokens", 0)
-                        if input_tok:
-                            # Store for later; emit combined usage at end
-                            tool_blocks["__input_tokens__"] = input_tok  # type: ignore[assignment]
+                        _input_tokens = usage.get("input_tokens", 0)
 
                     elif etype == "content_block_start":
                         idx = event.get("index", 0)
@@ -289,9 +288,8 @@ class AnthropicBackend(LLMBackend):
                                 input_dict = json.loads(tb["input_json"]) if tb["input_json"] else {}
                             except json.JSONDecodeError:
                                 input_dict = {"_raw": tb["input_json"]}
-                            import uuid as _uuid
                             yield ToolCallEvent(tool_call=ToolCall(
-                                id=tb["id"] or _uuid.uuid4().hex,
+                                id=tb["id"] or uuid.uuid4().hex,
                                 name=tb["name"],
                                 input=input_dict,
                             ))
@@ -299,10 +297,9 @@ class AnthropicBackend(LLMBackend):
                     elif etype == "message_delta":
                         usage = event.get("usage", {})
                         output_tok = usage.get("output_tokens", 0)
-                        input_tok = tool_blocks.pop("__input_tokens__", 0)  # type: ignore[arg-type]
-                        if output_tok or input_tok:
+                        if output_tok or _input_tokens:
                             yield UsageEvent(
-                                input_tokens=int(input_tok),
+                                input_tokens=_input_tokens,
                                 output_tokens=output_tok,
                             )
 
