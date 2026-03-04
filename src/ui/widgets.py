@@ -82,20 +82,23 @@ class ChatInput(Widget):
     DEFAULT_CSS = """
     ChatInput {
         height: 3;
-        border: solid #1e3a5f;
-        background: #0d1117;
+        border: tall #58a6ff;
+        background: #161b22;
         layout: horizontal;
     }
     ChatInput Input {
         width: 1fr;
         border: none;
-        background: #0d1117;
+        background: #161b22;
         color: #e6edf3;
+    }
+    ChatInput Input:disabled {
+        color: #6e7681;
     }
     ChatInput #send-hint {
         width: auto;
         padding: 1 1;
-        color: #6e7681;
+        color: #58a6ff;
     }
     """
 

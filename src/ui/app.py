@@ -55,7 +55,6 @@ class KaliMentorApp(App):
     }
     #bottom-bar {
         height: 5;
-        border-top: solid #30363d;
         background: #0d1117;
     }
     StatusBar {
