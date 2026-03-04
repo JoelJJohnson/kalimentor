@@ -17,12 +17,16 @@ class ChatLog(RichLog):
         border: solid #1e3a5f;
         padding: 0 1;
         background: #0d1117;
+        scrollbar-color: #58a6ff #161b22;
     }
     """
 
     def append_log(self, renderable: RenderableType) -> None:
+        # Only auto-scroll if the user is already near the bottom
+        at_bottom = self.scroll_y >= self.max_scroll_y - 3
         self.write(renderable)
-        self.scroll_end(animate=False)
+        if at_bottom:
+            self.scroll_end(animate=False)
 
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -105,6 +109,12 @@ class ChatInput(Widget):
     def compose(self) -> ComposeResult:
         yield Input(placeholder="> Ask anything or type a command...", id="chat-input-field")
         yield Static("Enter ↵", id="send-hint")
+
+    def on_click(self) -> None:
+        """Forward clicks on the widget border/padding to the inner Input."""
+        inp = self.query_one("#chat-input-field", Input)
+        if not inp.disabled:
+            inp.focus()
 
     def set_enabled(self, enabled: bool) -> None:
         inp = self.query_one("#chat-input-field", Input)

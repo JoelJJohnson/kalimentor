@@ -43,6 +43,7 @@ class KaliMentorApp(App):
     CSS = """
     Screen {
         background: #0d1117;
+        layout: vertical;
     }
     #header-bar {
         height: 1;
@@ -52,10 +53,16 @@ class KaliMentorApp(App):
     }
     #chat-pane {
         width: 1fr;
+        height: 1fr;
+    }
+    ChatLog {
+        width: 1fr;
+        height: 1fr;
     }
     #bottom-bar {
         height: 5;
         background: #0d1117;
+        dock: bottom;
     }
     StatusBar {
         width: 25%;
@@ -138,5 +145,7 @@ class KaliMentorApp(App):
     async def _handle_input(self, text: str) -> None:
         chat_input = self.query_one(ChatInput)
         chat_input.set_enabled(False)
-        await self.agent._propose_and_execute(text)
-        chat_input.set_enabled(True)
+        try:
+            await self.agent._propose_and_execute(text)
+        finally:
+            chat_input.set_enabled(True)
