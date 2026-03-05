@@ -39,6 +39,8 @@ class KaliMentorApp(App):
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+a", "analyse_terminal", "Analyse Terminal"),
+        ("pageup", "scroll_up", "Scroll Up"),
+        ("pagedown", "scroll_down", "Scroll Down"),
     ]
 
     CSS = """
@@ -119,6 +121,12 @@ class KaliMentorApp(App):
         if self.agent._session_manager is not None:
             self.agent._session_manager.save()
         self.exit()
+
+    def action_scroll_up(self) -> None:
+        self.query_one(ChatLog).scroll_page_up(animate=False)
+
+    def action_scroll_down(self) -> None:
+        self.query_one(ChatLog).scroll_page_down(animate=False)
 
     def _get_terminal_text(self) -> str | None:
         if not self.tmux_pane:
