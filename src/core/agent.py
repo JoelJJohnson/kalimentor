@@ -106,6 +106,9 @@ class AgentLoop:
             self._messages: list[dict[str, Any]] = []
         self._flags: list[str] = []
         self._notes: list[str] = []
+        # Console used for all output — can be replaced by the TUI to redirect
+        # Rich output into the ChatLog instead of leaking to the raw terminal.
+        self.console = console
         # Each AgentLoop gets its own PlanStore; register it as the active module store
         self._plan_store = PlanStore()
         set_plan_store(self._plan_store)
@@ -114,9 +117,9 @@ class AgentLoop:
 
     async def run_cli(self) -> None:
         """Start the interactive CLI loop (blocking)."""
-        console.print(BANNER)
-        console.print(f"[dim]Mode: {self.mode}  |  LLM: {self.llm}[/dim]")
-        console.print(HELP_TEXT)
+        self.console.print(BANNER)
+        self.console.print(f"[dim]Mode: {self.mode}  |  LLM: {self.llm}[/dim]")
+        self.console.print(HELP_TEXT)
 
         while True:
             try:
@@ -139,9 +142,9 @@ class AgentLoop:
                 await self.run(raw)
 
             except KeyboardInterrupt:
-                console.print("\n[yellow]Ctrl+C — type /quit to exit.[/yellow]")
+                self.console.print("\n[yellow]Ctrl+C — type /quit to exit.[/yellow]")
             except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
+                self.console.print(f"[red]Error: {e}[/red]")
 
     async def run(self, user_input: str) -> str:
         """Process one user turn through the agentic loop.
@@ -178,7 +181,7 @@ class AgentLoop:
 
             # Display any text the LLM produced
             if response.text:
-                console.print(Panel(Markdown(response.text), border_style="blue"))
+                self.console.print(Panel(Markdown(response.text), border_style="blue"))
 
             # ── No tool calls → LLM is done ─────────────────────────────
             if not response.tool_calls:
@@ -210,7 +213,7 @@ class AgentLoop:
         from rich.text import Text
 
         if not hasattr(self.llm, "stream_message"):
-            with Status("[cyan]Thinking…[/cyan]", console=console):
+            with Status("[cyan]Thinking…[/cyan]", console=self.console):
                 return await self.llm.create_message(
                     messages=messages,
                     system=system,
@@ -226,7 +229,7 @@ class AgentLoop:
 
         live_text = Text()
 
-        with Live(live_text, console=console, refresh_per_second=20) as live:
+        with Live(live_text, console=self.console, refresh_per_second=20) as live:
             async for event in self.llm.stream_message(
                 messages=messages,
                 system=system,
@@ -247,7 +250,7 @@ class AgentLoop:
 
         # Show token usage
         if input_tokens or output_tokens:
-            console.print(
+            self.console.print(
                 f"[dim]↑ {input_tokens} tokens in | ↓ {output_tokens} tokens out[/dim]"
             )
 
@@ -263,14 +266,14 @@ class AgentLoop:
     async def _do_compression(self) -> None:
         """Compress conversation history and update messages.jsonl."""
         before = len(self._messages)
-        with Status("[magenta]Compressing context…[/magenta]", console=console):
+        with Status("[magenta]Compressing context…[/magenta]", console=self.console):
             self._messages = await compress(
                 self._messages,
                 self.llm,
                 session_manager=self._session_manager,
             )
         after = len(self._messages)
-        console.print(
+        self.console.print(
             f"[dim]Context compressed: {before} → {after} messages.[/dim]"
         )
 
@@ -309,7 +312,7 @@ class AgentLoop:
             approved = await self._ask_confirmation(tc)
             if not approved:
                 msg = f"[User declined {tc.name}]"
-                console.print(f"[yellow]{msg}[/yellow]")
+                self.console.print(f"[yellow]{msg}[/yellow]")
                 return msg
 
         # ── Bash streaming path ──────────────────────────────────────────
@@ -340,7 +343,7 @@ class AgentLoop:
 
             with Live(
                 Panel("", title=f"[yellow]bash: {command[:50]}[/yellow]", border_style="yellow"),
-                console=console,
+                console=self.console,
                 refresh_per_second=20,
             ) as live:
                 drain_task = asyncio.create_task(drain_queue(live_display=live))
@@ -359,7 +362,7 @@ class AgentLoop:
             return result_str
 
         # ── Generic tool path (spinner) ──────────────────────────────────
-        with Status(f"[yellow]Running {tc.name}…[/yellow]", console=console):
+        with Status(f"[yellow]Running {tc.name}…[/yellow]", console=self.console):
             try:
                 result = await self.registry.execute(tc.name, tc.input)
                 result_str = str(result)
@@ -400,7 +403,7 @@ class AgentLoop:
 
         # Format input for display
         input_lines = "\n".join(f"  {k}: {v}" for k, v in tc.input.items())
-        console.print(
+        self.console.print(
             Panel(
                 input_lines or "(no input)",
                 title=f"[{risk_color}]Tool: {tc.name}[/{risk_color}]  "
@@ -412,7 +415,7 @@ class AgentLoop:
     def _display_tool_result(self, name: str, result: str) -> None:
         # Truncate long results for display (full result still goes to LLM)
         display = result if len(result) <= 3000 else result[:3000] + "\n[…truncated for display]"
-        console.print(
+        self.console.print(
             Panel(display, title=f"[dim]Result: {name}[/dim]", border_style="dim")
         )
 
@@ -461,21 +464,21 @@ class AgentLoop:
         if cmd == "quit":
             if self._session_manager is not None:
                 self._session_manager.save()
-                console.print(
+                self.console.print(
                     f"[green]Session saved.[/green] "
                     f"[dim]Resume with: kalimentor resume {self._session_manager.state.id}[/dim]"
                 )
-            console.print("[green]Goodbye.[/green]")
+            self.console.print("[green]Goodbye.[/green]")
             return "quit"
 
         elif cmd == "clear":
-            console.clear()
+            self.console.clear()
 
         elif cmd == "help":
-            console.print(HELP_TEXT)
+            self.console.print(HELP_TEXT)
 
         elif cmd == "plan":
-            console.print(self._plan_store.as_table())
+            self.console.print(self._plan_store.as_table())
 
         elif cmd == "memory":
             await self._show_memory()
@@ -489,14 +492,14 @@ class AgentLoop:
         elif cmd == "mode":
             if arg in ("interactive", "autonomous", "socratic", "yolo"):
                 self.mode = arg
-                console.print(f"[green]Mode switched to: {self.mode}[/green]")
+                self.console.print(f"[green]Mode switched to: {self.mode}[/green]")
                 if self.mode == "yolo":
-                    console.print(
+                    self.console.print(
                         "[bold red]WARNING: YOLO mode — all confirmations disabled. "
                         "Use only in CTF environments.[/bold red]"
                     )
             else:
-                console.print(
+                self.console.print(
                     "[yellow]Available modes: interactive, autonomous, socratic, yolo[/yellow]"
                 )
 
@@ -506,7 +509,7 @@ class AgentLoop:
             )
             if flag:
                 self._flags.append(flag)
-                console.print(f"[green]Flag recorded: {flag}[/green]")
+                self.console.print(f"[green]Flag recorded: {flag}[/green]")
 
         elif cmd == "note":
             note = arg or await asyncio.get_running_loop().run_in_executor(
@@ -519,27 +522,27 @@ class AgentLoop:
                     memory_tool = self.registry.get("write_memory")
                     if memory_tool:
                         pass  # User notes appended to memory in Phase 2
-                console.print("[green]Note saved.[/green]")
+                self.console.print("[green]Note saved.[/green]")
 
         elif cmd == "undo":
             # Remove last user + assistant message pair
             if len(self._messages) >= 2:
                 self._messages = self._messages[:-2]
-                console.print("[yellow]Last message pair removed from history.[/yellow]")
+                self.console.print("[yellow]Last message pair removed from history.[/yellow]")
             else:
-                console.print("[yellow]Nothing to undo.[/yellow]")
+                self.console.print("[yellow]Nothing to undo.[/yellow]")
 
         elif cmd == "compact":
             if not self._messages:
-                console.print("[yellow]No messages to compress.[/yellow]")
+                self.console.print("[yellow]No messages to compress.[/yellow]")
             else:
                 await self._do_compression()
 
         elif cmd == "export":
-            console.print("[dim]/export will be available in Phase 4.[/dim]")
+            self.console.print("[dim]/export will be available in Phase 4.[/dim]")
 
         else:
-            console.print(f"[yellow]Unknown command: /{cmd}. Type /help for options.[/yellow]")
+            self.console.print(f"[yellow]Unknown command: /{cmd}. Type /help for options.[/yellow]")
 
         return None
 
@@ -549,9 +552,9 @@ class AgentLoop:
         read_tool = self.registry.get("read_memory")
         if read_tool:
             content = await read_tool.handler()
-            console.print(Panel(content, title="KALIMENTOR.md", border_style="magenta"))
+            self.console.print(Panel(content, title="KALIMENTOR.md", border_style="magenta"))
         else:
-            console.print("[yellow]Memory tool not registered.[/yellow]")
+            self.console.print("[yellow]Memory tool not registered.[/yellow]")
 
     def _show_status(self) -> None:
         tbl = Table(title="Session Status", show_lines=True)
@@ -564,7 +567,7 @@ class AgentLoop:
         tbl.add_row("Flags", str(len(self._flags)))
         tbl.add_row("Notes", str(len(self._notes)))
         tbl.add_row("Session dir", self.session_dir)
-        console.print(tbl)
+        self.console.print(tbl)
 
     def _show_tools(self) -> None:
         tbl = Table(title="Registered Tools", show_lines=True)
@@ -583,4 +586,4 @@ class AgentLoop:
                 f"[{color}]{tool.risk_level.value}[/{color}]",
                 tool.description[:80],
             )
-        console.print(tbl)
+        self.console.print(tbl)

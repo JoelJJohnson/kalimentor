@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from rich.console import RenderableType
+import re
+from io import StringIO
+
+from rich.console import Console, RenderableType
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Static
@@ -13,6 +16,35 @@ from ..core.session import SessionManager
 from .widgets import ChatLog, StatusBar, ChatInput
 
 from .tmux import capture_pane
+
+# Strip ANSI escape codes when forwarding Rich output to the ChatLog
+_ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+class _ChatLogFile:
+    """File-like object that forwards Rich console output to a Textual ChatLog.
+
+    Rich renders ANSI codes into the string; we strip them and write plain
+    lines to the ChatLog so Textual can apply its own markup/styling.
+    """
+
+    def __init__(self, log: ChatLog) -> None:
+        self._log = log
+        self._buf = ""
+
+    def write(self, text: str) -> int:
+        text = _ANSI_ESCAPE.sub("", text)
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip():
+                self._log.append_log(line)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buf.strip():
+            self._log.append_log(self._buf)
+            self._buf = ""
 
 
 class TUICallback:
@@ -102,6 +134,16 @@ class KaliMentorApp(App):
         cb = TUICallback(log, status, chat_input)
         self.agent.tui_mode = True
         self.agent.ui = cb
+
+        # Redirect the agent's Rich console to write into the ChatLog
+        # so no output leaks to the raw terminal while Textual is running.
+        tui_file = _ChatLogFile(log)
+        self.agent.console = Console(
+            file=tui_file,
+            highlight=False,
+            markup=False,
+            no_color=True,
+        )
 
         chat_input.set_enabled(True)
 
