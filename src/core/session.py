@@ -84,11 +84,46 @@ class SessionManager:
 
     # ── Persistence ────────────────────────────────────────────────────
 
+    @property
+    def session_dir(self) -> Path:
+        """Per-session directory for memory files and message history."""
+        d = SESSIONS_DIR / self.state.id
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     def save(self) -> Path:
         self.state.updated_at = datetime.utcnow()
         path = SESSIONS_DIR / f"{self.state.id}.json"
         path.write_text(self.state.model_dump_json(indent=2))
         return path
+
+    def load_messages(self) -> list:
+        """Load conversation history from messages.jsonl."""
+        path = self.session_dir / "messages.jsonl"
+        if not path.exists():
+            return []
+        messages = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    messages.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        return messages
+
+    def append_message(self, message: dict) -> None:
+        """Append a single message to messages.jsonl."""
+        path = self.session_dir / "messages.jsonl"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(message) + "\n")
+
+    def save_messages(self, messages: list) -> None:
+        """Overwrite messages.jsonl with the given message list."""
+        path = self.session_dir / "messages.jsonl"
+        with path.open("w", encoding="utf-8") as f:
+            for msg in messages:
+                f.write(json.dumps(msg) + "\n")
 
     # ── State Updates ──────────────────────────────────────────────────
 

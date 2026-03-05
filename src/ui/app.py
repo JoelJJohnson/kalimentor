@@ -116,7 +116,8 @@ class KaliMentorApp(App):
                 self.run_worker(self._handle_input(text), exclusive=True)
 
     def action_quit(self) -> None:
-        self.agent.session.save()
+        if self.agent._session_manager is not None:
+            self.agent._session_manager.save()
         self.exit()
 
     def _get_terminal_text(self) -> str | None:
@@ -140,12 +141,12 @@ class KaliMentorApp(App):
             )
             return
 
-        self.run_worker(self.agent._analyse_terminal_output(terminal_text), exclusive=True)
+        self.run_worker(self.agent.run(f"Analyse this terminal output:\n{terminal_text}"), exclusive=True)
 
     async def _handle_input(self, text: str) -> None:
         chat_input = self.query_one(ChatInput)
         chat_input.set_enabled(False)
         try:
-            await self.agent._propose_and_execute(text)
+            await self.agent.run(text)
         finally:
             chat_input.set_enabled(True)

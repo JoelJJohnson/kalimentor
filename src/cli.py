@@ -12,9 +12,15 @@ from rich.console import Console
 from rich.table import Table
 
 from .core.agent import AgentLoop
-from .core.executor import ToolExecutor
 from .core.llm import create_backend, list_providers, DEFAULT_MODELS
 from .core.session import SessionManager
+from .core.tools.registry import ToolRegistry
+from .core.tools.bash_tool import register_bash_tool
+from .core.tools.memory_tool import register_memory_tools
+from .core.tools.findings_tool import register_findings_tool
+from .core.tools.file_tools import register_file_tools
+from .core.tools.security_tools import register_security_tools
+from .core.tools.plan_tool import register_plan_tool
 
 app = typer.Typer(
     name="kalimentor",
@@ -98,8 +104,23 @@ def start(
     tmux_pane = setup_tmux_layout()
 
     backend = create_backend(llm, **kwargs)
-    executor = ToolExecutor()
-    agent = AgentLoop(session, backend, executor)
+
+    session_dir = str(session.session_dir)
+    registry = ToolRegistry()
+    register_bash_tool(registry, working_dir=session_dir)
+    register_memory_tools(registry, session_dir=session_dir)
+    register_findings_tool(registry)
+    register_file_tools(registry)
+    register_security_tools(registry)
+    register_plan_tool(registry)
+
+    agent = AgentLoop(
+        llm=backend,
+        registry=registry,
+        mode=mode,
+        session_dir=session_dir,
+        session_manager=session,
+    )
 
     app = KaliMentorApp(session=session, agent=agent, tmux_pane=tmux_pane)
     app.run()
@@ -131,9 +152,24 @@ def resume(
         kwargs["api_key"] = api_key
 
     backend = create_backend(provider, **kwargs)
-    agent = AgentLoop(session, backend)
+
+    session_dir = str(session.session_dir)
+    registry = ToolRegistry()
+    register_bash_tool(registry, working_dir=session_dir)
+    register_memory_tools(registry, session_dir=session_dir)
+    register_findings_tool(registry)
+    register_file_tools(registry)
+    register_security_tools(registry)
+    register_plan_tool(registry)
+
+    agent = AgentLoop(
+        llm=backend,
+        registry=registry,
+        session_dir=session_dir,
+        session_manager=session,
+    )
     console.print(f"[green]Resuming: {session_id}[/green]")
-    asyncio.run(agent.run())
+    asyncio.run(agent.run_cli())
 
 
 # ═══════════════════════════════════════════════════════════════════════════
