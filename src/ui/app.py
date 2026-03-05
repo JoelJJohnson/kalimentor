@@ -8,7 +8,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 from textual.containers import Horizontal, Vertical
 
-from ..core.agent import AgentLoop, UICallback
+from ..core.agent import AgentLoop
 from ..core.session import SessionManager
 from .widgets import ChatLog, StatusBar, ChatInput
 
