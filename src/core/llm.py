@@ -117,6 +117,9 @@ class LLMBackend(ABC):
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} model={self.model}>"
 
+    def __str__(self) -> str:
+        return f"{self.provider} / {self.model}"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ANTHROPIC CLAUDE
@@ -175,7 +178,13 @@ class AnthropicBackend(LLMBackend):
                 headers=self._headers(),
                 json=body,
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                try:
+                    err = resp.json().get("error", {})
+                    detail = err.get("message") or resp.text
+                except Exception:
+                    detail = resp.text or f"HTTP {resp.status_code}"
+                raise ValueError(f"Anthropic API error {resp.status_code}: {detail}")
             data = resp.json()
 
         # Parse content blocks
@@ -241,12 +250,12 @@ class AnthropicBackend(LLMBackend):
                 json=body,
             ) as resp:
                 if resp.status_code >= 400:
-                    await resp.aread()
+                    body_bytes = await resp.aread()
                     try:
-                        err = resp.json().get("error", {})
-                        detail = err.get("message") or str(resp.json())
+                        err_data = json.loads(body_bytes).get("error", {})
+                        detail = err_data.get("message") or body_bytes.decode(errors="replace")
                     except Exception:
-                        detail = resp.text or f"HTTP {resp.status_code}"
+                        detail = body_bytes.decode(errors="replace") or f"HTTP {resp.status_code}"
                     raise ValueError(
                         f"Anthropic API error {resp.status_code}: {detail}"
                     )

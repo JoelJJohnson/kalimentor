@@ -173,7 +173,7 @@ class KaliMentorApp(App):
         elif cmd == "plan":
             log.append_log(self.agent._plan_store.as_table())
         elif cmd == "status":
-            log.append_log(str(self.agent._show_status()))
+            self.agent._show_status()
         elif cmd == "mode":
             parts = text.split(maxsplit=1)
             arg = parts[1] if len(parts) > 1 else ""
