@@ -171,7 +171,7 @@ class KaliMentorApp(App):
         if cmd == "quit":
             self.action_quit()
         elif cmd == "plan":
-            log.append_log(str(self.agent._plan_store.as_table()))
+            log.append_log(self.agent._plan_store.as_table())
         elif cmd == "status":
             log.append_log(str(self.agent._show_status()))
         elif cmd == "mode":
