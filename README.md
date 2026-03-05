@@ -9,29 +9,30 @@ A terminal-based, LLM-augmented tool for Kali Linux that **plans, executes, obse
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│                  KaliMentor CLI                   │
-│                                                   │
-│  ┌───────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │  Session   │  │ Planner  │  │  Research    │  │
-│  │  Manager   │  │  (LLM)   │  │  Mode        │  │
-│  └─────┬──────┘  └────┬─────┘  └──────┬───────┘  │
-│        │              │               │           │
-│  ┌─────▼──────────────▼───────────────▼────────┐  │
-│  │           Agentic Loop Engine               │  │
-│  │  Observe → Plan → Propose → Approve → Act   │  │
-│  └──────────────────┬──────────────────────────┘  │
-│                     │                             │
-│  ┌──────────────────▼──────────────────────────┐  │
-│  │  Executor (safety · timeouts · audit log)   │  │
-│  └──────────────────┬──────────────────────────┘  │
-│                     │                             │
-│  ┌──────────────────▼──────────────────────────┐  │
-│  │  Output Parser → Findings → Session State   │  │
-│  └─────────────────────────────────────────────┘  │
-│                                                   │
-│  AI: Ollama │ Claude │ Gemini │ DeepSeek │ OpenAI │
-└───────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                   KaliMentor CLI                      │
+│                                                       │
+│  ┌────────────┐  ┌──────────┐  ┌──────────────────┐  │
+│  │  Session   │  │ Planner  │  │  Research Mode   │  │
+│  │  Manager   │  │  (LLM)   │  │  (standalone)    │  │
+│  └─────┬──────┘  └────┬─────┘  └────────┬─────────┘  │
+│        │              │                 │             │
+│  ┌─────▼──────────────▼─────────────────▼──────────┐  │
+│  │              Agentic Loop Engine                 │  │
+│  │   user → LLM (tools) → tool calls → results →   │  │
+│  │        → LLM → … → text reply                   │  │
+│  └──────────────────┬───────────────────────────────┘  │
+│                     │                                  │
+│  ┌──────────────────▼───────────────────────────────┐  │
+│  │  Tool Registry (bash · memory · findings · plan) │  │
+│  └──────────────────┬───────────────────────────────┘  │
+│                     │                                  │
+│  ┌──────────────────▼───────────────────────────────┐  │
+│  │  Textual TUI  │  Session State  │  Audit Log     │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                        │
+│  AI: Ollama │ Claude │ Gemini │ DeepSeek │ OpenAI      │
+└────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -47,7 +48,7 @@ A terminal-based, LLM-augmented tool for Kali Linux that **plans, executes, obse
 ### Step 1 — Clone
 
 ```bash
-git clone https://github.com/yourorg/kalimentor.git
+git clone https://github.com/JoelJJohnson/kalimentor.git
 cd kalimentor
 ```
 
@@ -58,7 +59,7 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-This creates a virtualenv, installs all dependencies (including all AI providers), copies config, and checks your Kali tools.
+Creates a virtualenv, installs all dependencies, copies config, and checks your Kali tools.
 
 ### Step 3 — Activate Environment
 
@@ -68,13 +69,11 @@ source .venv/bin/activate
 
 ### Step 4 — Add Your API Key
 
-Edit `.env` with your preferred provider's key:
-
 ```bash
 nano .env
 ```
 
-Only ONE provider is needed. Ollama needs no key.
+Only one provider is needed. Ollama requires no key.
 
 ### Step 5 — Verify
 
@@ -83,7 +82,7 @@ kalimentor --help
 kalimentor providers
 ```
 
-### Manual Install (if you skip setup.sh)
+### Manual Install
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -109,16 +108,14 @@ kalimentor start -t 10.10.10.1 --llm ollama
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-# Models: claude-sonnet-4-20250514 (default), claude-haiku-4-5-20251001
 kalimentor start -t 10.10.10.1 --llm anthropic
-kalimentor start -t 10.10.10.1 --llm claude --model claude-sonnet-4-20250514
+kalimentor start -t 10.10.10.1 --llm claude --model claude-sonnet-4-6
 ```
 
 ### Google Gemini
 
 ```bash
 export GEMINI_API_KEY="AIza..."
-# Models: gemini-2.5-flash (default), gemini-2.5-pro
 kalimentor start -t 10.10.10.1 --llm gemini
 kalimentor start -t 10.10.10.1 --llm gemini --model gemini-2.5-pro
 ```
@@ -127,7 +124,6 @@ kalimentor start -t 10.10.10.1 --llm gemini --model gemini-2.5-pro
 
 ```bash
 export DEEPSEEK_API_KEY="sk-..."
-# Models: deepseek-chat (default), deepseek-reasoner
 kalimentor start -t 10.10.10.1 --llm deepseek
 kalimentor start -t 10.10.10.1 --llm deepseek --model deepseek-reasoner
 ```
@@ -136,7 +132,6 @@ kalimentor start -t 10.10.10.1 --llm deepseek --model deepseek-reasoner
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-# Models: gpt-4o (default), gpt-4o-mini
 kalimentor start -t 10.10.10.1 --llm openai
 ```
 
@@ -148,11 +143,9 @@ kalimentor start -t 10.10.10.1 --llm gemini --api-key "AIza..."
 
 ---
 
-## Usage by Challenge Type
+## Usage
 
 ### Machine (HTB / THM / OSCP)
-
-Recon → Enumerate → Exploit → PrivEsc → Root
 
 ```bash
 # Interactive (approve each step)
@@ -160,110 +153,85 @@ kalimentor start -t 10.10.10.1 -o "Gain root access" --llm claude
 
 # Socratic (hints only, you run the commands)
 kalimentor start -t 10.10.10.1 -o "Root the box" --llm gemini -m socratic
-
-# Inside the session:
-KaliMentor ⚡> next                         # AI proposes next actions
-KaliMentor ⚡> auto                         # Auto-run recon phase
-KaliMentor ⚡> !nmap -sV -p 80 10.10.10.1  # Direct command
-KaliMentor ⚡> hint                         # Socratic hint
-KaliMentor ⚡> research CVE-2024-1234       # Deep-dive a CVE
-KaliMentor ⚡> flag                         # Record captured flag
-KaliMentor ⚡> export                       # Export report
 ```
 
 ### Web Exploitation
-
-Surface map → Endpoints → Injection testing → Logic exploitation
 
 ```bash
 kalimentor start -u "http://target.htb" -c web -o "Capture the flag" --llm anthropic
 ```
 
-The AI proposes: `whatweb` → `gobuster`/`ffuf` → `sqlmap`/`dalfox` → manual logic guidance.
-
 ### Binary Exploitation (Pwn)
-
-Triage → Static analysis → Dynamic debug → ROP chain
 
 ```bash
 kalimentor start -c pwn -o "Exploit the binary for shell" --llm gemini
 ```
 
-The AI proposes: `file`/`checksec` → `objdump`/ghidra → `gdb` → pwntools exploit.
-
 ### Reverse Engineering
-
-Behavioral analysis → Decompile → Algorithm reconstruction → Solve
 
 ```bash
 kalimentor start -c reversing -o "Find the flag" --llm deepseek
 ```
 
-The AI proposes: `strings`/`ltrace` → ghidra → solve script.
-
 ### Cryptography
-
-Algorithm ID → Implementation analysis → Mathematical exploit
 
 ```bash
 kalimentor start -c crypto -o "Decrypt the ciphertext" --llm claude
 ```
 
-Use `research` for deep-dives: `research "RSA Wiener attack"`, `research "padding oracle"`.
-
-### Digital Forensics (DFIR)
-
-Artifact ingestion → Filter → Timeline → Payload extraction
+### Digital Forensics
 
 ```bash
 kalimentor start -c forensics -o "Analyze the PCAP and find the flag" --llm gemini
 ```
 
-The AI proposes: `tshark` filters → `volatility3` → timeline → extraction.
-
 ### Active Directory
-
-External access → BloodHound → Lateral movement → Domain Admin
 
 ```bash
 kalimentor start -t 10.10.10.1 -c active_directory -o "Compromise the domain" --llm anthropic
 ```
 
-The AI proposes: `responder` → `bloodhound-python` → Pass-the-Hash/Kerberoasting → DCSync.
-
 ---
 
-## Commands Reference
-
-### CLI Commands
+## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `kalimentor start` | Start a new session |
+| `kalimentor start` | Start a new session (opens TUI) |
 | `kalimentor resume <id>` | Resume a saved session |
 | `kalimentor sessions` | List all saved sessions |
 | `kalimentor export <id>` | Export session as Markdown report |
 | `kalimentor research <topic>` | Standalone research on any topic |
 | `kalimentor providers` | List supported AI providers |
 
-### In-Session Commands
+---
+
+## TUI Slash Commands
+
+These commands are available inside the Textual TUI:
 
 | Command | Description |
 |---------|-------------|
-| `next` | AI proposes next actions |
-| `auto` | Auto-run a phase (recon/enum/vuln) |
-| `hint` | Socratic hint (no direct answers) |
-| `research` | Deep-dive a CVE, tool, or technique |
-| `status` | Show session status |
-| `plan` | Regenerate attack plan |
-| `phase` | Manually set current phase |
-| `flag` | Record a captured flag |
-| `note` | Add a personal note |
-| `export` | Export session report |
-| `help` | Show command help |
-| `!<cmd>` | Execute any command directly |
-| `quit` | Save and exit |
-| *(free text)* | Ask anything — AI interprets it |
+| `/plan` | Show the current TODO/task list |
+| `/memory` | Show session memory (KALIMENTOR.md) |
+| `/status` | Show session info |
+| `/tools` | List all registered tools |
+| `/mode <name>` | Switch interaction mode |
+| `/flag <value>` | Record a captured flag |
+| `/note <text>` | Add a note to session memory |
+| `/undo` | Remove last message pair from history |
+| `/compact` | Force context compression |
+| `/export` | Export session report |
+| `/clear` | Clear the chat log |
+| `/quit` | Save and exit |
+
+Keyboard shortcuts:
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Q` | Quit |
+| `Ctrl+A` | Analyse tmux terminal pane |
+| `Page Up / Down` | Scroll chat log |
 
 ---
 
@@ -272,13 +240,14 @@ The AI proposes: `responder` → `bloodhound-python` → Pass-the-Hash/Kerberoas
 | Mode | Behavior |
 |------|----------|
 | `interactive` | AI proposes, you approve each action (default) |
-| `semi_auto` | AI runs within a phase, you approve phase transitions |
-| `autonomous` | AI runs full phases, you review results |
-| `socratic` | AI gives hints and questions only, you execute everything |
+| `autonomous` | AI runs all tools except DANGEROUS ones automatically |
+| `socratic` | AI explains and hints only — you run the commands |
+| `yolo` | Everything runs with no confirmations (CTF speedrun) |
 
 ```bash
 kalimentor start -t 10.10.10.1 -m socratic --llm gemini
 kalimentor start -t 10.10.10.1 -m autonomous --llm claude
+kalimentor start -t 10.10.10.1 -m yolo --llm deepseek
 ```
 
 ---
@@ -290,46 +259,54 @@ kalimentor/
 ├── setup.sh                 # Automated setup script
 ├── pyproject.toml           # Python project config + deps
 ├── .env.example             # API key template
-├── .gitignore
-├── README.md                # This file
 ├── config/
 │   └── default.yaml         # Default configuration
 ├── src/
-│   ├── __init__.py
 │   ├── cli.py               # Typer CLI entry point
 │   ├── core/
-│   │   ├── __init__.py
-│   │   ├── models.py        # Pydantic data models
-│   │   ├── llm.py           # AI backends (Claude/Gemini/DeepSeek/OpenAI/Ollama)
-│   │   ├── session.py       # Session persistence + state tracking
+│   │   ├── agent.py         # Agentic loop (tool_use cycle)
+│   │   ├── llm.py           # AI backends (5 providers)
+│   │   ├── session.py       # Session persistence + state
 │   │   ├── executor.py      # Safe command execution + timeouts
 │   │   ├── parser.py        # Output → structured findings
 │   │   ├── planner.py       # LLM-driven planning + prompts
-│   │   └── agent.py         # Agentic loop engine (OODA)
-│   ├── modules/
-│   │   ├── __init__.py
-│   │   └── methodologies.py # Attack patterns per challenge type
-│   ├── ui/
-│   │   └── __init__.py      # (Future: TUI components)
-│   └── utils/
-│       └── __init__.py      # (Future: helpers)
-├── templates/               # (Future: report templates)
-├── docs/                    # (Future: documentation)
+│   │   ├── context.py       # Context window compression
+│   │   ├── memory.py        # Session memory (KALIMENTOR.md)
+│   │   ├── models.py        # Pydantic data models
+│   │   ├── prompts.py       # System prompts per mode/challenge
+│   │   └── tools/
+│   │       ├── registry.py      # Tool registry + risk levels
+│   │       ├── bash_tool.py     # Shell execution tool
+│   │       ├── plan_tool.py     # Task plan tracking tool
+│   │       ├── memory_tool.py   # Memory read/write tools
+│   │       ├── findings_tool.py # Findings capture tool
+│   │       ├── file_tools.py    # File read/write tools
+│   │       ├── security_tools.py# Security-specific tools
+│   │       └── defense.py       # Blue team / DFIR tools
+│   └── ui/
+│       ├── app.py           # Textual TUI application
+│       ├── widgets.py       # ChatLog, StatusBar, ChatInput
+│       └── tmux.py          # tmux split layout integration
 └── tests/
-    └── __init__.py
 ```
 
 ---
 
 ## Session Data
 
-Sessions are saved at `~/.kalimentor/sessions/<id>.json` and include full command history, findings, and flags. Resume any session:
+Sessions are saved at `~/.kalimentor/sessions/<id>/` and include full command history, findings, flags, and memory. Resume or export at any time:
 
 ```bash
-kalimentor sessions          # List all
-kalimentor resume abc123def  # Resume by ID
+kalimentor sessions
+kalimentor resume abc123def
 kalimentor export abc123def -o report.md
 ```
+
+---
+
+## tmux Integration
+
+KaliMentor automatically sets up a split tmux layout when run inside tmux — the left pane is the TUI and the right pane is your terminal. Press `Ctrl+A` to send the right pane's output directly to the AI for analysis.
 
 ---
 
