@@ -127,7 +127,7 @@ class AnthropicBackend(LLMBackend):
 
     provider = "anthropic"
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str | None = None):
+    def __init__(self, model: str = "claude-sonnet-4-5", api_key: str | None = None):
         self.model = model
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not self.api_key:
@@ -240,7 +240,13 @@ class AnthropicBackend(LLMBackend):
                 headers=self._headers(),
                 json=body,
             ) as resp:
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    error_body = await resp.aread()
+                    raise httpx.HTTPStatusError(
+                        f"Anthropic API error {resp.status_code}: {error_body.decode()}",
+                        request=resp.request,
+                        response=resp,
+                    )
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -1140,8 +1146,8 @@ BACKEND_REGISTRY: dict[str, type[LLMBackend]] = {
 
 DEFAULT_MODELS: dict[str, str] = {
     "ollama": "llama3.1",
-    "anthropic": "claude-sonnet-4-20250514",
-    "claude": "claude-sonnet-4-20250514",
+    "anthropic": "claude-sonnet-4-5",
+    "claude": "claude-sonnet-4-5",
     "gemini": "gemini-2.5-flash",
     "google": "gemini-2.5-flash",
     "deepseek": "deepseek-chat",
