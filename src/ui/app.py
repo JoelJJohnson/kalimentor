@@ -195,8 +195,11 @@ class KaliMentorApp(App):
 
     async def _handle_input(self, text: str) -> None:
         chat_input = self.query_one(ChatInput)
+        log = self.query_one(ChatLog)
         chat_input.set_enabled(False)
         try:
             await self.agent.run(text)
+        except Exception as exc:
+            log.append_log(f"[bold red]ERROR:[/bold red] {exc}")
         finally:
             chat_input.set_enabled(True)
