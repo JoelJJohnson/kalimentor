@@ -242,6 +242,11 @@ class AnthropicBackend(LLMBackend):
         # Track input tokens from message_start event
         _input_tokens: int = 0
 
+        import sys as _sys
+        _sys.stderr.write(f"[DEBUG] Anthropic stream_message body keys: {list(body.keys())}\n")
+        _sys.stderr.write(f"[DEBUG] messages count: {len(messages)}, roles: {[m.get('role') for m in messages]}\n")
+        _sys.stderr.flush()
+
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream(
                 "POST",
@@ -256,6 +261,8 @@ class AnthropicBackend(LLMBackend):
                         detail = err_data.get("message") or body_bytes.decode(errors="replace")
                     except Exception:
                         detail = body_bytes.decode(errors="replace") or f"HTTP {resp.status_code}"
+                    _sys.stderr.write(f"[DEBUG] 400 response body: {body_bytes[:500]}\n")
+                    _sys.stderr.flush()
                     raise ValueError(
                         f"Anthropic API error {resp.status_code}: {detail}"
                     )
