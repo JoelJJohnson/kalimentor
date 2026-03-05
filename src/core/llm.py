@@ -127,7 +127,7 @@ class AnthropicBackend(LLMBackend):
 
     provider = "anthropic"
 
-    def __init__(self, model: str = "claude-sonnet-4-5", api_key: str | None = None):
+    def __init__(self, model: str = "claude-sonnet-4-6", api_key: str | None = None):
         self.model = model
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not self.api_key:
@@ -1146,8 +1146,8 @@ BACKEND_REGISTRY: dict[str, type[LLMBackend]] = {
 
 DEFAULT_MODELS: dict[str, str] = {
     "ollama": "llama3.1",
-    "anthropic": "claude-sonnet-4-5",
-    "claude": "claude-sonnet-4-5",
+    "anthropic": "claude-sonnet-4-6",
+    "claude": "claude-sonnet-4-6",
     "gemini": "gemini-2.5-flash",
     "google": "gemini-2.5-flash",
     "deepseek": "deepseek-chat",
