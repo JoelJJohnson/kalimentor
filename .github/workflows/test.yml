@@ -1,0 +1,36 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short
+        env:
+          # Dummy keys so imports don't fail — tests mock all API calls
+          ANTHROPIC_API_KEY: "sk-ant-test"
+          GOOGLE_API_KEY: "test"
+          OPENAI_API_KEY: "sk-test"
+          DEEPSEEK_API_KEY: "sk-test"

@@ -1,0 +1,58 @@
+# KaliMentor MCP Server Configuration — Example
+#
+# Copy this file to ~/.kalimentor/mcp.yaml and customize.
+# Enable MCP servers at runtime with: kalimentor start --mcp
+#
+# Each server entry needs either:
+#   command  (stdio transport) — shell command to launch the MCP server process
+#   url      (SSE transport)   — HTTP endpoint of a remote MCP server
+#
+# Environment variable expansion: ${VAR} is replaced from the shell environment.
+
+mcp_servers:
+
+  # ── Stdio servers (subprocess) ────────────────────────────────────────────
+
+  # Shodan — internet-wide scan data, host/IP lookups, CVE exposure
+  - name: shodan
+    command: npx -y @anthropic-ai/shodan-mcp
+    env:
+      SHODAN_API_KEY: ${SHODAN_API_KEY}
+
+  # Brave Search — web search without tracking
+  - name: brave-search
+    command: npx -y @modelcontextprotocol/server-brave-search
+    env:
+      BRAVE_API_KEY: ${BRAVE_API_KEY}
+
+  # Filesystem — safe file operations restricted to a working directory
+  - name: filesystem
+    command: npx -y @modelcontextprotocol/server-filesystem
+    args:
+      - /tmp/kalimentor
+
+  # GitHub — repository search, issue/PR inspection (useful for exploit research)
+  - name: github
+    command: npx -y @modelcontextprotocol/server-github
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+
+  # ── SSE servers (remote HTTP) ─────────────────────────────────────────────
+
+  # VirusTotal — file/URL/domain/IP reputation lookup
+  - name: virustotal
+    url: https://mcp.virustotal.com/sse
+    headers:
+      x-apikey: ${VT_API_KEY}
+
+  # Custom local MCP server (e.g. a local searchsploit wrapper)
+  # - name: local-exploits
+  #   url: http://localhost:8765/sse
+
+  # ── Local Python/binary servers ───────────────────────────────────────────
+
+  # Example: custom MCP server script in Python
+  # - name: my-custom-server
+  #   command: python3 /opt/mcp-servers/my_server.py
+  #   env:
+  #     SERVER_CONFIG: /etc/my_server.conf

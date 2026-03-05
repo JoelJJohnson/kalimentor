@@ -1,10 +1,39 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
-.venv/
-.env
+*.pyd
 *.egg-info/
 dist/
 build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+*.env
+.env.*
+!.env.example
+
+# Claude Code local settings
+.claude/
+
+# Build / cache
 .ruff_cache/
 .pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Internal planning docs — not for public distribution
+upgrade_plan.md
+docs/plans/

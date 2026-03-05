@@ -1,0 +1,112 @@
+# KaliMentor Hooks — Example Configuration
+#
+# Copy this file to ~/.kalimentor/hooks.yaml and customize.
+#
+# Hook events
+# -----------
+#   pre_tool      Fires before any tool call executes.
+#   post_tool     Fires after any tool call completes.
+#   pre_session   Fires when a new agent session starts.
+#   post_session  Fires when a session ends (/quit).
+#   on_finding    Fires when tool output matches a regex (CVE, creds, etc.).
+#   on_shell      Fires when a bash result suggests a shell was obtained.
+#   on_flag       Fires when /flag <value> is recorded.
+#
+# Environment variables available in `run`
+# -----------------------------------------
+#   $TARGET       Target IP or URL (set at session start).
+#   $SESSION_ID   Unique session identifier.
+#   $TOOL_NAME    Name of the tool that fired the hook.
+#   $TOOL_INPUT   JSON-encoded tool input dict.
+#   $TOOL_OUTPUT  Tool result string (post_tool / on_finding / on_shell).
+#   $PHASE        Current phase label (empty if not set).
+#   $FLAG_VALUE   The flag string (on_flag hooks only).
+#
+# Each hook can optionally include a `match` regex. When present, the hook only
+# fires if the match pattern is found in the relevant text (tool name for
+# pre_tool; tool output for post_tool, on_finding, on_shell).
+
+hooks:
+  # ── Session lifecycle ──────────────────────────────────────────────────────
+
+  - name: session_start_notify
+    event: pre_session
+    run: >
+      echo "[KaliMentor] Session $SESSION_ID started against $TARGET"
+      >> /tmp/kalimentor_audit.log
+
+  - name: session_end_notify
+    event: post_session
+    run: >
+      echo "[KaliMentor] Session $SESSION_ID ended" >> /tmp/kalimentor_audit.log
+
+  # ── Tool auditing ──────────────────────────────────────────────────────────
+
+  - name: log_all_tools
+    event: pre_tool
+    run: >
+      echo "$(date -Iseconds) [$SESSION_ID] $TOOL_NAME: $TOOL_INPUT"
+      >> /tmp/kalimentor_tools.log
+
+  - name: log_bash_output
+    event: post_tool
+    match: "bash"          # Only fires for bash tool calls
+    run: >
+      printf "=== bash output ===\n%s\n\n" "$TOOL_OUTPUT"
+      >> /tmp/kalimentor_bash.log
+
+  # ── Findings ───────────────────────────────────────────────────────────────
+
+  - name: alert_on_cve
+    event: on_finding
+    match: "CVE-\\d{4}-\\d{4,}"
+    run: >
+      notify-send "KaliMentor: CVE found"
+      "Session $SESSION_ID — check findings" 2>/dev/null || true
+
+  - name: alert_on_credentials
+    event: on_finding
+    match: "(?i)(password|passwd|credentials?|secret|api.?key)\\s*[:=]\\s*\\S+"
+    run: >
+      echo "[CREDS] $SESSION_ID: possible credential in $TOOL_NAME output"
+      >> /tmp/kalimentor_creds.log
+
+  - name: alert_on_hash
+    event: on_finding
+    match: "\\$(?:1|2a|2b|5|6)\\$[A-Za-z0-9./]{8}"
+    run: >
+      echo "[HASH] Found hash in $TOOL_NAME output — session $SESSION_ID"
+      >> /tmp/kalimentor_hashes.log
+
+  # ── Shell / access events ──────────────────────────────────────────────────
+
+  - name: notify_shell_obtained
+    event: on_shell
+    run: |
+      notify-send "KaliMentor: Shell obtained!" \
+        "Target: $TARGET | Session: $SESSION_ID" 2>/dev/null || \
+      echo "[SHELL] Shell obtained on $TARGET (session $SESSION_ID)" \
+        >> /tmp/kalimentor_shells.log
+
+  # ── Flag capture ───────────────────────────────────────────────────────────
+
+  - name: record_flag
+    event: on_flag
+    run: >
+      echo "$(date -Iseconds) [FLAG] $FLAG_VALUE (session $SESSION_ID, target $TARGET)"
+      >> /tmp/kalimentor_flags.log
+
+  - name: flag_desktop_notify
+    event: on_flag
+    run: >
+      notify-send "KaliMentor: FLAG CAPTURED"
+      "$FLAG_VALUE" 2>/dev/null || true
+
+  # ── Dangerous tool gate (extra logging) ───────────────────────────────────
+
+  - name: log_msfconsole
+    event: pre_tool
+    match: "msfconsole|msfvenom|exploit"
+    run: >
+      echo "$(date -Iseconds) [DANGER] $TOOL_NAME called by session $SESSION_ID"
+      >> /tmp/kalimentor_danger.log
