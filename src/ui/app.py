@@ -101,11 +101,7 @@ class KaliMentorApp(App):
         self.agent.tui_mode = True
         self.agent.ui = cb
 
-        chat_input.set_enabled(False)
-        self.run_worker(self._start_agent(), exclusive=True)
-
-    async def _start_agent(self) -> None:
-        await self.agent.run()
+        chat_input.set_enabled(True)
 
     def on_input_submitted(self, event) -> None:
         if event.input.id == "chat-input-field":
