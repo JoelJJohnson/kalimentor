@@ -241,11 +241,14 @@ class AnthropicBackend(LLMBackend):
                 json=body,
             ) as resp:
                 if resp.status_code >= 400:
-                    error_body = await resp.aread()
-                    raise httpx.HTTPStatusError(
-                        f"Anthropic API error {resp.status_code}: {error_body.decode()}",
-                        request=resp.request,
-                        response=resp,
+                    await resp.aread()
+                    try:
+                        err = resp.json().get("error", {})
+                        detail = err.get("message") or str(resp.json())
+                    except Exception:
+                        detail = resp.text or f"HTTP {resp.status_code}"
+                    raise ValueError(
+                        f"Anthropic API error {resp.status_code}: {detail}"
                     )
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):

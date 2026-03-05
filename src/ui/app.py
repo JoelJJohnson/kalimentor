@@ -151,13 +151,41 @@ class KaliMentorApp(App):
         if event.input.id == "chat-input-field":
             text = event.value.strip()
             event.input.clear()
-            if text:
-                # Echo user message into log before AI responds
-                msg = Text()
-                msg.append(" > ", style="bold green")
-                msg.append(text, style="bold white")
-                self.query_one(ChatLog).append_log(msg)
-                self.run_worker(self._handle_input(text), exclusive=True)
+            if not text:
+                return
+            # Handle slash commands locally — never send to LLM
+            if text.startswith("/"):
+                self._handle_slash_tui(text)
+                return
+            # Echo user message into log before AI responds
+            msg = Text()
+            msg.append(" > ", style="bold green")
+            msg.append(text, style="bold white")
+            self.query_one(ChatLog).append_log(msg)
+            self.run_worker(self._handle_input(text), exclusive=True)
+
+    def _handle_slash_tui(self, text: str) -> None:
+        """Handle slash commands inside the TUI without calling the LLM."""
+        log = self.query_one(ChatLog)
+        cmd = text.lstrip("/").split()[0].lower()
+        if cmd == "quit":
+            self.action_quit()
+        elif cmd == "plan":
+            log.append_log(str(self.agent._plan_store.as_table()))
+        elif cmd == "status":
+            log.append_log(str(self.agent._show_status()))
+        elif cmd == "mode":
+            parts = text.split(maxsplit=1)
+            arg = parts[1] if len(parts) > 1 else ""
+            if arg in ("interactive", "autonomous", "socratic", "yolo"):
+                self.agent.mode = arg
+                log.append_log(f"[green]Mode switched to: {arg}[/green]")
+            else:
+                log.append_log("[yellow]Available modes: interactive, autonomous, socratic, yolo[/yellow]")
+        elif cmd == "clear":
+            log.clear()
+        else:
+            log.append_log(f"[yellow]Unknown command: {text}[/yellow]")
 
     def action_quit(self) -> None:
         if self.agent._session_manager is not None:
